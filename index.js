@@ -1,5 +1,3 @@
-# Bot Mặt Đất Màu Xanh — Code hoàn chỉnh
-
 const express = require("express");
 const crypto = require("crypto");
 
@@ -323,7 +321,6 @@ function isBotMention(text) {
     "bot mat dat mau xanh"
   ];
 
-  // Tên bot lấy từ getMe()
   if (
     botName &&
     normalized.startsWith(
@@ -333,7 +330,6 @@ function isBotMention(text) {
     return true;
   }
 
-  // Tên cố định
   for (
     const alias of aliases
   ) {
@@ -346,7 +342,6 @@ function isBotMention(text) {
     }
   }
 
-  // @Bot /ping
   if (
     /^@\s*bot\b/i.test(
       value
@@ -380,7 +375,6 @@ function removeBotMention(text) {
         ""
     );
 
-  // @Bot + tên bot
   if (
     botName &&
     normalized.startsWith(
@@ -409,7 +403,6 @@ function removeBotMention(text) {
     }
   }
 
-  // @Bot Mat Dat Mau Xanh
   const fixedRegex =
     /^@\s*bot\s+mat\s+dat\s+mau\s+xanh\b/i;
 
@@ -424,7 +417,6 @@ function removeBotMention(text) {
       .trim();
   }
 
-  // @Bot
   if (
     /^@\s*bot\b/i.test(value)
   ) {
@@ -793,7 +785,10 @@ function getRememberedAnswer(
   const normalized =
     normalizeText(text);
 
-  // Memory mặc định
+  // ==========================================================
+  // MEMORY MẶC ĐỊNH
+  // ==========================================================
+
   for (
     const rule of
       defaultMemories
@@ -819,7 +814,10 @@ function getRememberedAnswer(
     }
   }
 
-  // Memory do /ghinho tạo
+  // ==========================================================
+  // MEMORY DO ADMIN GHI
+  // ==========================================================
+
   for (
     const [
       question,
@@ -974,6 +972,7 @@ registerCommand(
         ];
 
         if (admin) {
+
           lines.push(
             "",
             "🔐 ADMIN:",
@@ -999,11 +998,10 @@ registerCommand(
             "/ghinho câu hỏi - câu trả lời",
             "→ Ghi nhớ.",
             "",
-            "Hoặc ghi nhớ nhiều dòng:",
             "/ghinho câu hỏi",
             "nội dung dòng 1",
             "nội dung dòng 2",
-            "nội dung dòng 3"
+            "→ Ghi nhớ nhiều dòng."
           );
         }
 
@@ -1112,6 +1110,9 @@ registerCommand(
               groupChatEnabled
                 ? "🟢 ON"
                 : "🔴 OFF"
+            }`,
+            `Memory: ${
+              memories.size
             }`
           ].join("\n")
         );
@@ -1243,6 +1244,7 @@ registerCommand(
         if (
           !groupChatEnabled
         ) {
+
           await sendMessage(
             chatId,
             "🔴 Chat nhóm đang tắt rồi."
@@ -1293,6 +1295,7 @@ registerCommand(
         if (
           groupChatEnabled
         ) {
+
           await sendMessage(
             chatId,
             "🟢 Chat nhóm đang bật rồi."
@@ -1375,17 +1378,6 @@ registerCommand(
 
 // ============================================================
 // GHINHO
-//
-// HỖ TRỢ:
-//
-// 1. /ghinho câu hỏi - câu trả lời
-//
-// 2. /ghinho câu hỏi
-//    dòng 1
-//    dòng 2
-//    dòng 3
-//
-// KHÔNG BẮT BUỘC DẤU "-"
 // ============================================================
 
 registerCommand(
@@ -1399,6 +1391,10 @@ registerCommand(
         text
       }) => {
 
+        // ------------------------------------------------------
+        // Không có nội dung
+        // ------------------------------------------------------
+
         if (
           !text ||
           !text.trim()
@@ -1407,178 +1403,21 @@ registerCommand(
           await sendMessage(
             chatId,
             [
-              "🧠 CÁCH DÙNG /GHINHO",
+              "🧠 CÁCH DÙNG:",
               "",
-              "Cách 1:",
-              "@Bot /ghinho câu hỏi - câu trả lời",
+              "1️⃣ Có dấu -:",
+              "/ghinho câu hỏi - câu trả lời",
               "",
-              "Cách 2:",
-              "@Bot /ghinho câu hỏi",
+              "2️⃣ Không cần dấu -:",
+              "/ghinho câu hỏi",
               "nội dung dòng 1",
               "nội dung dòng 2",
               "nội dung dòng 3",
               "",
               "Ví dụ:",
-              "@Bot /ghinho thông tin về Hoàng Vũ",
-              "Tiktok hoangvu_102_ (acc chính)",
-              "vuhoang_102 (acc phụ)",
-              "YT @hoangvu_102",
-              "Dịch vụ",
-              "Buff like ff",
-              "Cho thuê bot ff hđlv7, team 5, antilag",
-              "Nạp xu tiktok, done hộ, ..."
-            ].join("\n")
-          );
-
-          return;
-        }
-
-        // Giữ nguyên xuống dòng
-        const raw =
-          String(text)
-            .replace(
-              /\r\n/g,
-              "\n"
-            )
-            .trim();
-
-        let question = "";
-        let answer = "";
-
-        // ====================================================
-        // KIỂU CÓ DẤU -
-        //
-        // câu hỏi - câu trả lời
-        // ====================================================
-
-        const firstLineEnd =
-          raw.indexOf("\n");
-
-        const firstLine =
-          firstLineEnd === -1
-            ? raw
-            : raw
-                .slice(
-                  0,
-                  firstLineEnd
-                )
-                .trim();
-
-        const restLines =
-          firstLineEnd === -1
-            ? ""
-            : raw
-                .slice(
-                  firstLineEnd + 1
-                )
-                .trim();
-
-        // Tìm " - "
-        const dashIndex =
-          firstLine.indexOf(
-            " - "
-          );
-
-        if (
-          dashIndex !== -1
-        ) {
-
-          question =
-            firstLine
-              .slice(
-                0,
-                dashIndex
-              )
-              .trim();
-
-          answer =
-            firstLine
-              .slice(
-                dashIndex + 3
-              )
-              .trim();
-
-          // Nếu phía dưới còn nhiều dòng
-          // thì giữ nguyên và nối vào answer
-          if (
-            restLines
-          ) {
-
-            answer =
-              answer
-                ? `${answer}\n${restLines}`
-                : restLines;
-          }
-
-        } else {
-
-          // ==================================================
-          // KIỂU KHÔNG CÓ DẤU -
-          //
-          // dòng đầu = câu hỏi
-          // dòng sau = câu trả lời
-          // ==================================================
-
-          if (
-            firstLineEnd === -1
-          ) {
-
-            await sendMessage(
-              chatId,
-              [
-                "❌ Không xác định được nội dung.",
-                "",
-                "Cần có câu hỏi và câu trả lời.",
-                "",
-                "Ví dụ:",
-                "/ghinho thông tin về Hoàng Vũ",
-                "Tiktok hoangvu_102_",
-                "YT @hoangvu_102"
-              ].join("\n")
-            );
-
-            return;
-          }
-
-          question =
-            firstLine;
-
-          answer =
-            restLines;
-        }
-
-        // ====================================================
-        // KIỂM TRA CÂU HỎI
-        // ====================================================
-
-        if (
-          !question
-        ) {
-
-          await sendMessage(
-            chatId,
-            "❌ Câu hỏi đang bị trống."
-          );
-
-          return;
-        }
-
-        // ====================================================
-        // KIỂM TRA CÂU TRẢ LỜI
-        // ====================================================
-
-        if (
-          !answer
-        ) {
-
-          await sendMessage(
-            chatId,
-            [
-              "❌ Câu trả lời đang bị trống.",
-              "",
-              "Ví dụ:",
               "/ghinho thông tin về Hoàng Vũ",
-              "Tiktok hoangvu_102_",
+              "Tiktok hoangvu_102_ ( acc chính )",
+              "vuhoang_102 ( acc phụ )",
               "YT @hoangvu_102"
             ].join("\n")
           );
@@ -1586,14 +1425,196 @@ registerCommand(
           return;
         }
 
-        // ====================================================
-        // LƯU MEMORY
-        // ====================================================
+        // ------------------------------------------------------
+        // QUAN TRỌNG:
+        //
+        // text ở đây PHẢI giữ nguyên \n
+        // nhờ parseCommand() bên dưới.
+        // ------------------------------------------------------
+
+        const raw =
+          String(text)
+            .replace(
+              /\r\n/g,
+              "\n"
+            )
+            .replace(
+              /\r/g,
+              "\n"
+            )
+            .trim();
+
+        let question = "";
+        let answer = "";
+
+        // ------------------------------------------------------
+        // KIỂU 1:
+        //
+        // /ghinho Hoàng Vũ là ai - Là người tạo bot
+        // ------------------------------------------------------
+
+        const dashMatch =
+          raw.match(
+            /^([\s\S]*?)\s+-\s+([\s\S]+)$/
+          );
+
+        if (dashMatch) {
+
+          question =
+            dashMatch[1]
+              .trim();
+
+          answer =
+            dashMatch[2]
+              .trim();
+
+        } else {
+
+          // ----------------------------------------------------
+          // KIỂU 2:
+          //
+          // /ghinho thông tin về Hoàng Vũ
+          // dòng 1
+          // dòng 2
+          // dòng 3
+          //
+          // Dòng đầu = câu hỏi
+          // Phần còn lại = câu trả lời
+          // ----------------------------------------------------
+
+          const lines =
+            raw
+              .split("\n")
+              .map(
+                line =>
+                  line.trim()
+              );
+
+          // Xóa dòng trống ở đầu/cuối
+          while (
+            lines.length &&
+            !lines[0]
+          ) {
+            lines.shift();
+          }
+
+          while (
+            lines.length &&
+            !lines[
+              lines.length - 1
+            ]
+          ) {
+            lines.pop();
+          }
+
+          if (
+            lines.length < 2
+          ) {
+
+            await sendMessage(
+              chatId,
+              [
+                "❌ Không xác định được nội dung.",
+                "",
+                "Dùng:",
+                "/ghinho câu hỏi - câu trả lời",
+                "",
+                "Hoặc:",
+                "/ghinho câu hỏi",
+                "nội dung dòng 1",
+                "nội dung dòng 2"
+              ].join("\n")
+            );
+
+            return;
+          }
+
+          question =
+            lines[0]
+              .trim();
+
+          answer =
+            lines
+              .slice(1)
+              .join("\n")
+              .trim();
+        }
+
+        // ------------------------------------------------------
+        // KIỂM TRA
+        // ------------------------------------------------------
+
+        if (
+          !question ||
+          !answer
+        ) {
+
+          await sendMessage(
+            chatId,
+            [
+              "❌ Câu hỏi hoặc nội dung đang bị trống.",
+              "",
+              "Hãy nhập lại /ghinho."
+            ].join("\n")
+          );
+
+          return;
+        }
+
+        // ------------------------------------------------------
+        // GIỚI HẠN MEMORY
+        // ------------------------------------------------------
+
+        if (
+          question.length >
+          500
+        ) {
+
+          await sendMessage(
+            chatId,
+            "❌ Câu hỏi quá dài. Tối đa 500 ký tự."
+          );
+
+          return;
+        }
+
+        if (
+          answer.length >
+          10000
+        ) {
+
+          await sendMessage(
+            chatId,
+            "❌ Nội dung ghi nhớ quá dài. Tối đa 10000 ký tự."
+          );
+
+          return;
+        }
+
+        // ------------------------------------------------------
+        // NORMALIZE QUESTION
+        // ------------------------------------------------------
 
         const normalizedQuestion =
           normalizeText(
             question
           );
+
+        if (
+          !normalizedQuestion
+        ) {
+
+          await sendMessage(
+            chatId,
+            "❌ Câu hỏi không hợp lệ."
+          );
+
+          return;
+        }
+
+        // ------------------------------------------------------
+        // LƯU
+        // ------------------------------------------------------
 
         memories.set(
           normalizedQuestion,
@@ -1604,12 +1625,16 @@ registerCommand(
           }
         );
 
-        // ====================================================
+        // ------------------------------------------------------
         // LOG
-        // ====================================================
+        // ------------------------------------------------------
 
         log(
-          "MEMORY SAVED:"
+          "=========================================="
+        );
+
+        log(
+          "🧠 MEMORY SAVED"
         );
 
         log(
@@ -1622,17 +1647,25 @@ registerCommand(
           answer
         );
 
-        // ====================================================
-        // XÁC NHẬN
-        // ====================================================
+        log(
+          "MEMORY COUNT:",
+          memories.size
+        );
+
+        log(
+          "=========================================="
+        );
+
+        // ------------------------------------------------------
+        // TRẢ KẾT QUẢ
+        // ------------------------------------------------------
 
         await sendMessage(
           chatId,
           [
-            "✅ Đã ghi nhớ!",
+            "✅ ĐÃ GHI NHỚ!",
             "",
-            "🧠 Câu hỏi:",
-            question,
+            `🧠 ${question}`,
             "",
             "🤖 Nội dung:",
             answer
@@ -1645,16 +1678,19 @@ registerCommand(
 // ============================================================
 // PARSE COMMAND
 //
-// QUAN TRỌNG:
-// KHÔNG split toàn bộ text bằng /\s+/
+// QUAN TRỌNG NHẤT:
 //
-// Vì /ghinho có thể có nhiều dòng.
+// KHÔNG dùng:
+// split(/\s+/)
+//
+// Vì cách đó sẽ làm mất xuống dòng.
+//
+// Hàm này giữ nguyên toàn bộ nội dung phía sau command.
 // ============================================================
 
 function parseCommand(
   text
 ) {
-
   const value =
     String(text || "")
       .trim();
@@ -1665,44 +1701,53 @@ function parseCommand(
     return null;
   }
 
-  // Chỉ lấy dòng đầu để xác định command
-  const firstLine =
-    value
-      .split(/\r?\n/)[0]
-      .trim();
+  // Ví dụ:
+  //
+  // /ghinho thông tin về Hoàng Vũ
+  // Tiktok abc
+  // YT xyz
+  //
+  // command = ghinho
+  //
+  // text giữ nguyên:
+  //
+  // thông tin về Hoàng Vũ
+  // Tiktok abc
+  // YT xyz
 
-  const parts =
-    firstLine.split(
-      /\s+/
+  const match =
+    value.match(
+      /^\/([^\s]+)(?:\s+([\s\S]*))?$/
     );
 
+  if (!match) {
+    return null;
+  }
+
   const command =
-    parts[0]
-      .slice(1)
+    String(
+      match[1] || ""
+    )
       .split("@")[0]
       .toLowerCase();
 
-  // Độ dài của /command
-  const commandLength =
-    parts[0].length;
-
-  // Lấy NGUYÊN phần còn lại
-  // nên xuống dòng được giữ nguyên
-  const textAfterCommand =
-    value
-      .slice(commandLength)
-      .trim();
+  const textContent =
+    match[2] !== undefined
+      ? match[2]
+      : "";
 
   return {
     command,
 
     args:
-      textAfterCommand
+      textContent
+        .trim()
         .split(/\s+/)
         .filter(Boolean),
 
+    // GIỮ NGUYÊN XUỐNG DÒNG
     text:
-      textAfterCommand
+      textContent.trim()
   };
 }
 
@@ -1714,7 +1759,6 @@ async function handleCommand(
   update,
   parsed
 ) {
-
   const command =
     COMMANDS.get(
       parsed.command
@@ -1769,7 +1813,6 @@ async function handleCommand(
 function normalizeWebhook(
   body
 ) {
-
   if (
     !body ||
     typeof body !==
@@ -1789,7 +1832,6 @@ function normalizeWebhook(
     data.message || {};
 
   return {
-
     eventName:
       data.event_name ||
       "",
@@ -1844,7 +1886,6 @@ function normalizeWebhook(
 async function handleMessage(
   update
 ) {
-
   const {
     chatId,
     userId,
@@ -1914,7 +1955,6 @@ async function handleMessage(
 
   // ==========================================================
   // GROUP
-  // CHỈ TRẢ LỜI KHI CÓ @BOT
   // ==========================================================
 
   let messageText =
@@ -1960,8 +2000,6 @@ async function handleMessage(
 
   } else {
 
-    // Chat riêng
-    // Không cần @Bot
     messageText =
       text;
   }
@@ -1970,9 +2008,7 @@ async function handleMessage(
   // CHỈ @BOT
   // ==========================================================
 
-  if (
-    !messageText
-  ) {
+  if (!messageText) {
 
     await sendMessage(
       chatId,
@@ -1995,9 +2031,7 @@ async function handleMessage(
       messageText
     );
 
-  if (
-    parsed
-  ) {
+  if (parsed) {
 
     try {
 
@@ -2030,9 +2064,7 @@ async function handleMessage(
   // BOT OFF
   // ==========================================================
 
-  if (
-    !botEnabled
-  ) {
+  if (!botEnabled) {
 
     log(
       "BOT OFF -> IGNORE"
@@ -2050,12 +2082,10 @@ async function handleMessage(
       messageText
     );
 
-  if (
-    remembered
-  ) {
+  if (remembered) {
 
     log(
-      "MEMORY HIT"
+      "🧠 MEMORY HIT"
     );
 
     try {
@@ -2112,519 +2142,4 @@ async function handleMessage(
     try {
 
       await sendMessage(
-        chatId,
-        [
-          "😵 Bot đang gặp lỗi AI.",
-          "",
-          "Vui lòng thử lại sau."
-        ].join("\n")
-      );
-
-    } catch (
-      sendError
-    ) {
-
-      log(
-        "SEND ERROR:",
-        sendError.message
-      );
-    }
-  }
-}
-
-// ============================================================
-// WEBHOOK AUTH
-// ============================================================
-
-function verifyWebhook(
-  req
-) {
-
-  const received =
-    req.headers[
-      "x-bot-api-secret-token"
-    ];
-
-  if (
-    !received
-  ) {
-    return false;
-  }
-
-  const a =
-    Buffer.from(
-      String(received)
-    );
-
-  const b =
-    Buffer.from(
-      WEBHOOK_SECRET
-    );
-
-  if (
-    a.length !==
-    b.length
-  ) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(
-    a,
-    b
-  );
-}
-
-// ============================================================
-// WEBHOOK
-// ============================================================
-
-app.post(
-  "/webhook",
-  async (
-    req,
-    res
-  ) => {
-
-    if (
-      !verifyWebhook(req)
-    ) {
-
-      log(
-        "WEBHOOK AUTH FAILED"
-      );
-
-      return res
-        .status(403)
-        .json({
-          ok: false,
-          error:
-            "Unauthorized"
-        });
-    }
-
-    const update =
-      normalizeWebhook(
-        req.body
-      );
-
-    log(
-      "ZALO WEBHOOK:",
-      JSON.stringify(
-        req.body,
-        null,
-        2
-      )
-    );
-
-    // ACK ngay
-    res.json({
-      ok: true
-    });
-
-    if (
-      !update
-    ) {
-      return;
-    }
-
-    log(
-      "EVENT:",
-      update.eventName
-    );
-
-    // ========================================================
-    // TEXT
-    // ========================================================
-
-    if (
-      update.eventName ===
-      "message.text.received"
-    ) {
-
-      handleMessage(
-        update
-      ).catch(
-        error => {
-
-          log(
-            "HANDLE MESSAGE ERROR:",
-            error.message
-          );
-        }
-      );
-
-      return;
-    }
-
-    // ========================================================
-    // IMAGE
-    // ========================================================
-
-    if (
-      update.eventName ===
-      "message.image.received"
-    ) {
-
-      if (
-        update.chatId
-      ) {
-
-        sendMessage(
-          update.chatId,
-          "🖼️ Bot đã nhận được ảnh."
-        ).catch(
-          error => {
-
-            log(
-              "IMAGE ERROR:",
-              error.message
-            );
-          }
-        );
-      }
-
-      return;
-    }
-
-    // ========================================================
-    // STICKER
-    // ========================================================
-
-    if (
-      update.eventName ===
-      "message.sticker.received"
-    ) {
-
-      if (
-        update.chatId
-      ) {
-
-        sendMessage(
-          update.chatId,
-          "😎 Sticker đẹp đấy!"
-        ).catch(
-          error => {
-
-            log(
-              "STICKER ERROR:",
-              error.message
-            );
-          }
-        );
-      }
-
-      return;
-    }
-  }
-);
-
-// ============================================================
-// HEALTH
-// ============================================================
-
-app.get(
-  "/",
-  (
-    req,
-    res
-  ) => {
-
-    res.json({
-      ok: true,
-
-      bot:
-        "Bot Mặt Đất Màu Xanh",
-
-      status:
-        "online",
-
-      botEnabled,
-
-      groupChatEnabled,
-
-      ruleBreakEnabled,
-
-      gemini:
-        Boolean(
-          GEMINI_API_KEY
-        ),
-
-      model:
-        activeGeminiModel ||
-        GEMINI_MODELS[0],
-
-      adminCount:
-        ADMIN_IDS.size,
-
-      webhook:
-        PUBLIC_URL
-          ? `${PUBLIC_URL}/webhook`
-          : null
-    });
-  }
-);
-
-app.get(
-  "/health",
-  (
-    req,
-    res
-  ) => {
-
-    res.json({
-      ok: true,
-      status:
-        "online"
-    });
-  }
-);
-
-// ============================================================
-// SET WEBHOOK
-// ============================================================
-
-async function setWebhook() {
-
-  if (
-    !ZALO_BOT_TOKEN
-  ) {
-    return;
-  }
-
-  if (
-    !PUBLIC_URL
-  ) {
-
-    log(
-      "Không có PUBLIC_URL."
-    );
-
-    return;
-  }
-
-  const webhookUrl =
-    `${PUBLIC_URL}/webhook`;
-
-  log(
-    "SET WEBHOOK:",
-    webhookUrl
-  );
-
-  const data =
-    await zaloApi(
-      "setWebhook",
-      {
-        url:
-          webhookUrl,
-
-        secret_token:
-          WEBHOOK_SECRET
-      }
-    );
-
-  log(
-    "SET WEBHOOK RESULT:",
-    JSON.stringify(data)
-  );
-}
-
-// ============================================================
-// STARTUP
-// ============================================================
-
-async function startup() {
-
-  console.log("");
-
-  console.log(
-    "=========================================="
-  );
-
-  console.log(
-    "🤖 BOT MẶT ĐẤT MÀU XANH"
-  );
-
-  console.log(
-    "=========================================="
-  );
-
-  console.log(
-    "PORT:",
-    PORT
-  );
-
-  console.log(
-    "PUBLIC URL:",
-    PUBLIC_URL ||
-      "NOT_SET"
-  );
-
-  console.log(
-    "ZALO TOKEN:",
-    mask(
-      ZALO_BOT_TOKEN
-    )
-  );
-
-  console.log(
-    "GEMINI KEY:",
-    mask(
-      GEMINI_API_KEY
-    )
-  );
-
-  console.log(
-    "GEMINI MODEL:",
-    GEMINI_MODELS.join(
-      ", "
-    )
-  );
-
-  console.log(
-    "ADMIN IDS:",
-    ADMIN_IDS.size
-  );
-
-  console.log(
-    "WEBHOOK SECRET:",
-    mask(
-      WEBHOOK_SECRET
-    )
-  );
-
-  console.log(
-    "GROUP MODE: @BOT ONLY"
-  );
-
-  console.log(
-    "GROUP CHAT:",
-    groupChatEnabled
-      ? "ON"
-      : "OFF"
-  );
-
-  console.log(
-    "=========================================="
-  );
-
-  // ==========================================================
-  // GET BOT
-  // ==========================================================
-
-  if (
-    ZALO_BOT_TOKEN
-  ) {
-
-    try {
-
-      await getMe();
-
-      log(
-        "BOT NAME:",
-        botInfo
-          ?.display_name ||
-          botInfo
-            ?.account_name ||
-          "Unknown"
-      );
-
-    } catch (
-      error
-    ) {
-
-      log(
-        "ZALO getMe ERROR:",
-        error.message
-      );
-    }
-  }
-
-  // ==========================================================
-  // WEBHOOK
-  // ==========================================================
-
-  if (
-    ZALO_BOT_TOKEN &&
-    PUBLIC_URL
-  ) {
-
-    try {
-
-      await setWebhook();
-
-    } catch (
-      error
-    ) {
-
-      log(
-        "SET WEBHOOK ERROR:",
-        error.message
-      );
-    }
-  }
-
-  console.log("");
-
-  console.log(
-    "🚀 BOT ĐÃ ONLINE"
-  );
-
-  console.log(
-    "🟢 ĐANG CHỜ TIN NHẮN..."
-  );
-
-  console.log(
-    "=========================================="
-  );
-}
-
-// ============================================================
-// START SERVER
-// ============================================================
-
-app.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
-
-    log(
-      `Server listening on ${PORT}`
-    );
-
-    startup().catch(
-      error => {
-
-        log(
-          "STARTUP ERROR:",
-          error.message
-        );
-      }
-    );
-  }
-);
-
-// ============================================================
-// PROCESS SAFETY
-// ============================================================
-
-process.on(
-  "unhandledRejection",
-  reason => {
-
-    console.error(
-      "UNHANDLED REJECTION:",
-      reason
-    );
-  }
-);
-
-process.on(
-  "uncaughtException",
-  error => {
-
-    console.error(
-      "UNCAUGHT EXCEPTION:",
-      error
-    );
-  }
-);
+        chat
