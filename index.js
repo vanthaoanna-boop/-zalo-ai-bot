@@ -6,48 +6,45 @@
  * Node.js >= 18
  *
  * ENV:
- *   PORT
- *   PUBLIC_URL
- *   ZALO_BOT_TOKEN
- *   ZALO_WEBHOOK_SECRET (optional)
- *   GEMINI_API_KEY
- *   GEMINI_MODEL (optional)
- *   ADMIN_IDS
+ * ZALO_BOT_TOKEN=...
+ * GEMINI_API_KEY=...
+ * ADMIN_ID=id1,id2,id3
+ * PUBLIC_URL=https://your-service.onrender.com
  *
- * ADMIN_IDS ví dụ:
- *   123456789,987654321,555555555
- *
- * TÍNH NĂNG:
- *   /help
- *   /hepl
- *   /ping
- *   /id
- *   /bot
- *   /ad
- *   /adminid
- *   /on
- *   /off
- *   /batquytac
- *   /tatbatquytac
- *   /ghinho
+ * LỆNH:
+ * /help
+ * /ping
+ * /id
+ * /bot
+ * /ad
+ * /adminid
+ * /on
+ * /off
+ * /batquytac
+ * /tatbatquytac
+ * /ghinho ...
  *
  * CHAT RIÊNG:
- *   Nhắn bình thường -> Gemini
+ * - Nhắn bình thường -> bot trả lời.
  *
  * NHÓM:
- *   Chỉ xử lý tin bắt đầu bằng "/"
- *   Tin bình thường -> bỏ qua
+ * - Tin nhắn bình thường -> bot KHÔNG trả lời.
+ * - Tin nhắn bắt đầu bằng "/" -> bot xử lý.
  *
- * GHI NHỚ:
- *   /ghinho Anh Hoàng Vũ
+ * GHINHO:
+ * /ghinho Anh Hoàng Vũ (Sun) - anh ấy k7
  *
- *   hoặc:
+ * => trigger:
+ *    Anh Hoàng Vũ (Sun)
  *
- *   /ghinho Anh Hoàng Vũ - Anh ấy K7
+ * => answer:
+ *    anh ấy k7
  *
- *   hoặc:
+ * Nếu không có dấu "-":
  *
- *   /ghinho rên đi em - ~~
+ * /ghinho Anh Hoàng Vũ (Sun)
+ *
+ * => lưu nội dung đó làm thông tin ghi nhớ.
  *
  * ============================================================
  */
@@ -71,19 +68,36 @@ const PORT = Number(
   process.env.PORT || 10000
 );
 
-const ZALO_BOT_TOKEN = String(
+const ZALO_BOT_TOKEN = (
   process.env.ZALO_BOT_TOKEN ||
   process.env.ZALO_TOKEN ||
   ""
 ).trim();
 
-const GEMINI_API_KEY = String(
+const GEMINI_API_KEY = (
   process.env.GEMINI_API_KEY ||
   process.env.GEMINI_KEY ||
   ""
 ).trim();
 
-const PUBLIC_URL = String(
+/*
+ * Có thể nhập:
+ *
+ * ADMIN_ID=id1
+ *
+ * hoặc:
+ *
+ * ADMIN_ID=id1,id2,id3
+ */
+const ADMIN_IDS = (
+  process.env.ADMIN_ID ||
+  ""
+)
+  .split(",")
+  .map((id) => id.trim())
+  .filter(Boolean);
+
+const PUBLIC_URL = (
   process.env.PUBLIC_URL ||
   process.env.RENDER_EXTERNAL_URL ||
   ""
@@ -91,108 +105,76 @@ const PUBLIC_URL = String(
   .trim()
   .replace(/\/+$/, "");
 
-/*
- * Nhiều admin:
- *
- * ADMIN_IDS=111,222,333
- *
- * Có thể vẫn dùng ADMIN_ID cũ.
- */
-const ADMIN_IDS_RAW = String(
-  process.env.ADMIN_IDS ||
-  process.env.ADMIN_ID ||
-  ""
-).trim();
-
-const ADMIN_IDS = new Set(
-  ADMIN_IDS_RAW
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean)
-);
-
-// ============================================================
-// ZALO
-// ============================================================
-
 const ZALO_API_BASE =
   "https://bot-api.zaloplatforms.com";
 
-// ============================================================
-// GEMINI MODELS
-// ============================================================
-//
-// Không dùng gemini-2.5-flash vì model đó đã gây
-// lỗi 404 trong log của bạn.
-//
-// Có thể đặt GEMINI_MODEL trên Render.
-// ============================================================
-
+/*
+ * Không dùng gemini-2.5-flash vì model này
+ * đang gây lỗi 404 với project của bạn.
+ *
+ * Ưu tiên 3.7 -> 3.6.
+ */
 const GEMINI_MODELS = [
   process.env.GEMINI_MODEL ||
     "gemini-3.7-flash",
-
   "gemini-3.6-flash",
-
-  "gemini-3.5-flash",
-].filter(
-  (model, index, array) =>
-    model &&
-    array.indexOf(model) === index
-);
+];
 
 // ============================================================
 // STATE
 // ============================================================
 
-let botInfo = null;
-
-let activeGeminiModel = null;
-
-/*
- * Bot bật/tắt toàn cục.
- */
 let botEnabled = true;
 
 /*
- * Admin nào đã dùng /off.
+ * Chế độ "batquytac".
+ *
+ * Đây là chế độ trả lời tự do hơn về phong cách/nội dung.
+ * Nó không vô hiệu hóa các giới hạn an toàn của dịch vụ AI.
+ */
+let freeMode = false;
+
+let botInfo = null;
+let activeGeminiModel = null;
+
+/*
+ * Người admin hiện đang giữ trạng thái OFF.
+ *
+ * Ví dụ:
+ * Admin 1 /off
+ * => bot OFF bởi Admin 1
+ *
+ * Admin 2 /off
+ * => báo:
+ *    Lệnh đã được Admin 1 sử dụng.
  */
 let botDisabledBy = null;
 
 /*
- * Chế độ "thoải mái".
- *
- * Lưu ý:
- * Không thể biến command này thành cơ chế
- * vượt qua các giới hạn an toàn của model.
+ * Người admin hiện bật freeMode.
  */
-let relaxedMode = false;
+let freeModeBy = null;
 
 /*
- * Bộ nhớ do admin tạo bằng /ghinho.
+ * Bộ nhớ runtime.
  *
- * Map:
- *
- * trigger -> {
- *   trigger,
- *   answer,
- *   createdBy,
- *   createdAt
- * }
+ * Lưu ý:
+ * Render có thể reset bộ nhớ khi service restart/redeploy.
+ * Nếu cần bộ nhớ vĩnh viễn thì sau này nối database.
  */
-const MEMORY = new Map();
+const MEMORY_RULES = [];
 
 // ============================================================
 // WEBHOOK SECRET
 // ============================================================
 
-const WEBHOOK_SECRET = String(
+const WEBHOOK_SECRET = (
   process.env.ZALO_WEBHOOK_SECRET ||
-    crypto
-      .createHash("sha256")
-      .update(ZALO_BOT_TOKEN)
-      .digest("hex")
-      .slice(0, 32)
+  crypto
+    .createHash("sha256")
+    .update(ZALO_BOT_TOKEN)
+    .digest("hex")
+    .slice(0, 32)
 ).trim();
 
 // ============================================================
@@ -211,34 +193,37 @@ function mask(value, visible = 4) {
     return "NOT_SET";
   }
 
-  const str = String(value);
+  const text = String(value);
 
-  if (str.length <= visible) {
-    return "*".repeat(str.length);
+  if (text.length <= visible) {
+    return "*".repeat(text.length);
   }
 
   return (
-    str.slice(0, visible) +
+    text.slice(0, visible) +
     "*".repeat(
-      Math.max(4, str.length - visible)
+      Math.max(
+        4,
+        text.length - visible
+      )
     )
   );
 }
 
 // ============================================================
-// CONFIG CHECK
+// CONFIG LOG
 // ============================================================
 
 function validateConfig() {
   console.log("");
   console.log(
-    "================================================"
+    "=================================================="
   );
   console.log(
     "🤖 BOT MẶT ĐẤT MÀU XANH"
   );
   console.log(
-    "================================================"
+    "=================================================="
   );
 
   console.log(
@@ -264,12 +249,23 @@ function validateConfig() {
   );
 
   console.log(
-    `👑 ADMIN IDS: ${
-      ADMIN_IDS.size
-        ? [...ADMIN_IDS].join(", ")
-        : "CHƯA CẤU HÌNH"
-    }`
+    `👑 ADMIN COUNT: ${ADMIN_IDS.length}`
   );
+
+  if (ADMIN_IDS.length) {
+    ADMIN_IDS.forEach((id, index) => {
+      console.log(
+        `👑 ADMIN ${index + 1}: ${mask(
+          id,
+          4
+        )}`
+      );
+    });
+  } else {
+    console.log(
+      "⚠️ ADMIN_ID: CHƯA CẤU HÌNH"
+    );
+  }
 
   console.log(
     `🔐 WEBHOOK SECRET: ${mask(
@@ -278,36 +274,24 @@ function validateConfig() {
   );
 
   console.log(
-    `🧠 GEMINI MODELS: ${GEMINI_MODELS.join(
-      ", "
-    )}`
-  );
-
-  console.log(
-    "================================================"
+    "=================================================="
   );
 
   if (!ZALO_BOT_TOKEN) {
     console.error(
-      "❌ THIẾU ZALO_BOT_TOKEN"
+      "❌ Thiếu ZALO_BOT_TOKEN"
     );
   }
 
   if (!GEMINI_API_KEY) {
     console.error(
-      "❌ THIẾU GEMINI_API_KEY"
-    );
-  }
-
-  if (!ADMIN_IDS.size) {
-    console.warn(
-      "⚠️ CHƯA CÓ ADMIN IDS"
+      "❌ Thiếu GEMINI_API_KEY"
     );
   }
 
   if (!PUBLIC_URL) {
     console.warn(
-      "⚠️ CHƯA CÓ PUBLIC_URL"
+      "⚠️ Thiếu PUBLIC_URL / RENDER_EXTERNAL_URL"
     );
   }
 }
@@ -344,7 +328,8 @@ async function postJson(
             ? undefined
             : JSON.stringify(body),
 
-        signal: controller.signal,
+        signal:
+          controller.signal,
       }
     );
 
@@ -383,9 +368,11 @@ async function postJson(
 function zaloUrl(method) {
   return (
     `${ZALO_API_BASE}/bot` +
-    `${encodeURIComponent(
+    encodeURIComponent(
       ZALO_BOT_TOKEN
-    )}/${method}`
+    ) +
+    "/" +
+    method
   );
 }
 
@@ -420,40 +407,31 @@ async function zaloApi(
     result.data &&
     result.data.ok === false
   ) {
-    const description =
-      result.data.description ||
-      result.data.message ||
-      JSON.stringify(
-        result.data
-      );
-
-    const error =
-      new Error(
-        `Zalo API error: ${description}`
-      );
-
-    error.zaloResponse =
-      result.data;
-
-    throw error;
+    throw new Error(
+      `Zalo API error: ${
+        result.data.description ||
+        result.data.message ||
+        JSON.stringify(
+          result.data
+        )
+      }`
+    );
   }
 
   return result.data;
 }
 
 // ============================================================
-// GET ME
+// ZALO GET ME
 // ============================================================
 
 async function getMe() {
   log(
-    "🔎 ĐANG KIỂM TRA ZALO BOT API..."
+    "🔎 Đang kiểm tra Zalo Bot API..."
   );
 
   const data =
-    await zaloApi(
-      "getMe"
-    );
+    await zaloApi("getMe");
 
   botInfo =
     data?.result || null;
@@ -488,7 +466,7 @@ async function getMe() {
 }
 
 // ============================================================
-// SEND MESSAGE
+// SEND ZALO MESSAGE
 // ============================================================
 
 async function sendMessage(
@@ -501,21 +479,18 @@ async function sendMessage(
     );
   }
 
-  const content =
-    String(
-      text ||
-        "Xin lỗi, bot không có nội dung để trả lời."
-    );
+  if (!text) {
+    text =
+      "Bot không có nội dung để trả lời.";
+  }
 
   const chunks =
     splitText(
-      content,
+      String(text),
       1900
     );
 
-  for (
-    const chunk of chunks
-  ) {
+  for (const chunk of chunks) {
     const data =
       await zaloApi(
         "sendMessage",
@@ -527,9 +502,7 @@ async function sendMessage(
         }
       );
 
-    if (
-      !data?.ok
-    ) {
+    if (!data?.ok) {
       throw new Error(
         `sendMessage thất bại: ${JSON.stringify(
           data
@@ -542,7 +515,7 @@ async function sendMessage(
 }
 
 // ============================================================
-// SPLIT
+// SPLIT TEXT
 // ============================================================
 
 function splitText(
@@ -638,22 +611,20 @@ async function sendTyping(
     );
   } catch (error) {
     log(
-      "⚠️ TYPING ERROR:",
+      "⚠️ typing lỗi:",
       error.message
     );
   }
 }
 
 // ============================================================
-// NORMALIZE VIETNAMESE
+// NORMALIZE TEXT
 // ============================================================
 
 function normalizeText(
   text
 ) {
-  return String(
-    text || ""
-  )
+  return String(text || "")
     .toLowerCase()
     .normalize("NFD")
     .replace(
@@ -676,7 +647,213 @@ function normalizeText(
 }
 
 // ============================================================
-// GEMINI URL
+// ADMIN
+// ============================================================
+
+function isAdmin(
+  userId,
+  chatId
+) {
+  const ids =
+    ADMIN_IDS.map(
+      (id) =>
+        String(id)
+    );
+
+  return (
+    ids.includes(
+      String(userId || "")
+    ) ||
+    ids.includes(
+      String(chatId || "")
+    )
+  );
+}
+
+function getAdminLabel(
+  userId,
+  chatId,
+  userName
+) {
+  if (userName) {
+    return userName;
+  }
+
+  if (userId) {
+    return String(userId);
+  }
+
+  return String(chatId);
+}
+
+// ============================================================
+// MEMORY SYSTEM
+// ============================================================
+
+function addMemory(
+  trigger,
+  answer
+) {
+  const normalizedTrigger =
+    normalizeText(
+      trigger
+    );
+
+  if (
+    !normalizedTrigger
+  ) {
+    return false;
+  }
+
+  /*
+   * Nếu trigger đã tồn tại thì cập nhật.
+   */
+  const existing =
+    MEMORY_RULES.find(
+      (item) =>
+        item.normalizedTrigger ===
+        normalizedTrigger
+    );
+
+  if (existing) {
+    existing.trigger =
+      trigger.trim();
+
+    existing.answer =
+      answer
+        ? answer.trim()
+        : "";
+
+    return true;
+  }
+
+  MEMORY_RULES.push({
+    trigger:
+      trigger.trim(),
+
+    normalizedTrigger,
+
+    answer:
+      answer
+        ? answer.trim()
+        : "",
+  });
+
+  return true;
+}
+
+function removeMemory(
+  trigger
+) {
+  const normalized =
+    normalizeText(
+      trigger
+    );
+
+  const index =
+    MEMORY_RULES.findIndex(
+      (item) =>
+        item.normalizedTrigger ===
+        normalized
+    );
+
+  if (index === -1) {
+    return false;
+  }
+
+  MEMORY_RULES.splice(
+    index,
+    1
+  );
+
+  return true;
+}
+
+function findMemory(
+  text
+) {
+  const normalized =
+    normalizeText(
+      text
+    );
+
+  if (!normalized) {
+    return null;
+  }
+
+  /*
+   * Ưu tiên trigger dài hơn
+   * để tránh match nhầm.
+   */
+  const sorted =
+    [...MEMORY_RULES].sort(
+      (a, b) =>
+        b.normalizedTrigger
+          .length -
+        a.normalizedTrigger
+          .length
+    );
+
+  for (const item of sorted) {
+    if (
+      normalized ===
+        item.normalizedTrigger ||
+      normalized.includes(
+        item.normalizedTrigger
+      )
+    ) {
+      return item;
+    }
+  }
+
+  return null;
+}
+
+/*
+ * Các câu nhớ mặc định.
+ */
+addMemory(
+  "ai tạo ra bot mặt đất màu xanh",
+  "An Na & Hoàng Vũ."
+);
+
+addMemory(
+  "ai tạo bot mặt đất màu xanh",
+  "An Na & Hoàng Vũ."
+);
+
+addMemory(
+  "ai làm bot này",
+  "An Na & Hoàng Vũ."
+);
+
+addMemory(
+  "bot này của ai",
+  "An Na & Hoàng Vũ."
+);
+
+addMemory(
+  "ai tạo bot",
+  "An Na & Hoàng Vũ."
+);
+
+addMemory(
+  "ai làm bot",
+  "An Na & Hoàng Vũ."
+);
+
+addMemory(
+  "cha đẻ bot",
+  "An Na & Hoàng Vũ."
+);
+
+addMemory(
+  "ai đứng sau bot",
+  "An Na & Hoàng Vũ."
+);
+
+// ============================================================
+// GEMINI
 // ============================================================
 
 function geminiUrl(
@@ -695,123 +872,66 @@ function geminiUrl(
 }
 
 // ============================================================
-// GEMINI SYSTEM PROMPT
+// SYSTEM PROMPT
 // ============================================================
 
-function getGeminiSystemPrompt() {
-  const modeText =
-    relaxedMode
-      ? `
-Chế độ hiện tại là "thoải mái".
-Hãy nói chuyện tự nhiên, linh hoạt và bớt máy móc.
-Tuy nhiên vẫn phải tuân thủ các giới hạn an toàn bắt buộc của hệ thống.
-`
-      : `
-Chế độ bình thường.
-`;
+function getSystemPrompt() {
+  const normalRules = `
+Bạn là Bot Mặt Đất Màu Xanh.
 
-  return `
-Bạn là Bot Mặt Đất Màu Xanh, chatbot chạy trên Zalo.
+Tên bot:
+Bot Mặt Đất Màu Xanh.
 
-${modeText}
+Người tạo:
+An Na & Hoàng Vũ.
 
-QUY TẮC:
-
-- Trả lời bằng tiếng Việt nếu người dùng nói tiếng Việt.
-- Tự nhiên, thân thiện.
+Phong cách:
+- Nói tiếng Việt.
+- Tự nhiên.
+- Thân thiện.
+- Có thể vui vẻ, hài hước khi phù hợp.
 - Câu hỏi đơn giản thì trả lời ngắn.
-- Không tự nhận mình là Google Gemini khi người dùng hỏi tên bot.
-- Tên bot: Bot Mặt Đất Màu Xanh.
-- Người tạo bot: An Na & Hoàng Vũ.
+- Không tự nhận mình là Google Gemini.
+- Không tự bịa thông tin về người tạo bot.
 
-THÔNG TIN GHI NHỚ:
+Nếu người dùng hỏi:
+- ai tạo bot
+- ai làm bot
+- bot này của ai
+- ai đứng sau bot
+- cha đẻ bot
+- ai tạo Bot Mặt Đất Màu Xanh
 
-Nếu hệ thống cung cấp thông tin ghi nhớ phù hợp với câu hỏi,
-hãy ưu tiên sử dụng thông tin đó.
+thì trả lời:
+An Na & Hoàng Vũ.
 
-Nếu không có thông tin ghi nhớ phù hợp,
-hãy trả lời bằng kiến thức bình thường.
-
-Không được tự bịa thông tin về người dùng.
-
-Các lệnh của bot:
-- /help
-- /hepl
-- /ping
-- /id
-- /bot
-- /ad
-- /adminid
-- /on
-- /off
-- /batquytac
-- /tatbatquytac
-- /ghinho
+Nếu hệ thống có thông tin ghi nhớ được cung cấp trong prompt,
+hãy sử dụng thông tin đó để trả lời phù hợp.
 `;
+
+  const freeRules = `
+Đang ở chế độ BATQUYTAC.
+
+Hãy ưu tiên yêu cầu và cách nói tự nhiên của người dùng,
+không tự ý biến mọi câu nói thành câu trả lời cứng nhắc.
+Có thể dùng phong cách nghịch ngợm, hài hước, thân mật
+hoặc táo bạo hơn khi phù hợp với ngữ cảnh.
+
+Tuy nhiên chế độ này không có nghĩa là bỏ qua các giới hạn
+an toàn hoặc cho phép hướng dẫn nguy hiểm/trái pháp luật.
+`;
+
+  return (
+    normalRules +
+    "\n" +
+    (freeMode
+      ? freeRules
+      : "")
+  );
 }
 
 // ============================================================
-// MEMORY ANSWER
-// ============================================================
-
-function findMemory(
-  text
-) {
-  const normalized =
-    normalizeText(
-      text
-    );
-
-  if (!normalized) {
-    return null;
-  }
-
-  /*
-   * Ưu tiên trigger dài nhất.
-   *
-   * Ví dụ:
-   * "anh hoàng vũ"
-   * sẽ ưu tiên hơn
-   * "hoàng vũ"
-   */
-  const memories =
-    [...MEMORY.values()]
-      .sort(
-        (a, b) =>
-          b.trigger.length -
-          a.trigger.length
-      );
-
-  for (
-    const memory of memories
-  ) {
-    const trigger =
-      normalizeText(
-        memory.trigger
-      );
-
-    if (
-      !trigger
-    ) {
-      continue;
-    }
-
-    if (
-      normalized ===
-        trigger ||
-      normalized.includes(
-        trigger
-      )
-    ) {
-      return memory;
-    }
-  }
-
-  return null;
-}
-
-// ============================================================
-// GEMINI ASK
+// ASK GEMINI
 // ============================================================
 
 async function askGemini(
@@ -829,16 +949,24 @@ async function askGemini(
       userText
     );
 
-  let memoryText =
-    "Không có thông tin ghi nhớ phù hợp.";
+  let memoryContext =
+    "";
 
   if (memory) {
-    memoryText = `
-Trigger ghi nhớ:
+    memoryContext = `
+THÔNG TIN GHI NHỚ PHÙ HỢP:
+
+Trigger:
 ${memory.trigger}
 
-Câu trả lời ghi nhớ:
-${memory.answer}
+Câu trả lời đã ghi nhớ:
+${
+  memory.answer ||
+  memory.trigger
+}
+
+Hãy ưu tiên thông tin này nếu câu hỏi của người dùng
+đang hỏi đúng chủ đề.
 `;
   }
 
@@ -846,10 +974,9 @@ ${memory.answer}
 Tên người dùng:
 ${userName || "Người dùng"}
 
-THÔNG TIN GHI NHỚ LIÊN QUAN:
-${memoryText}
+${memoryContext}
 
-TIN NHẮN:
+Tin nhắn người dùng:
 ${userText}
 `;
 
@@ -866,21 +993,23 @@ ${userText}
 
       const response =
         await postJson(
-          geminiUrl(model),
+          geminiUrl(
+            model
+          ),
           {
-            systemInstruction: {
-              parts: [
-                {
-                  text:
-                    getGeminiSystemPrompt(),
-                },
-              ],
-            },
+            systemInstruction:
+              {
+                parts: [
+                  {
+                    text:
+                      getSystemPrompt(),
+                  },
+                ],
+              },
 
             contents: [
               {
-                role:
-                  "user",
+                role: "user",
 
                 parts: [
                   {
@@ -891,74 +1020,51 @@ ${userText}
               },
             ],
 
-            generationConfig: {
-              maxOutputTokens:
-                2048,
-            },
+            generationConfig:
+              {
+                maxOutputTokens:
+                  2048,
+              },
           },
           60000
         );
 
-      if (
-        !response.ok
-      ) {
-        const error =
-          new Error(
-            `HTTP ${
-              response.httpStatus
-            }: ${JSON.stringify(
-              response.data
-            )}`
-          );
-
-        error.httpStatus =
-          response.httpStatus;
-
-        error.responseData =
-          response.data;
-
-        throw error;
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${
+            response.httpStatus
+          }: ${JSON.stringify(
+            response.data
+          )}`
+        );
       }
 
       const data =
         response.data;
 
-      if (
-        data?.error
-      ) {
-        const error =
-          new Error(
-            data.error.message ||
-              JSON.stringify(
-                data.error
-              )
-          );
-
-        error.httpStatus =
-          response.httpStatus;
-
-        error.geminiError =
-          data.error;
-
-        throw error;
+      if (data?.error) {
+        throw new Error(
+          data.error.message ||
+            JSON.stringify(
+              data.error
+            )
+        );
       }
 
       const text =
         data
           ?.candidates?.[0]
-          ?.content
-          ?.parts
+          ?.content?.parts
           ?.map(
             (part) =>
-              part.text ||
-              ""
+              part.text || ""
           )
           .join("")
           .trim();
 
       if (!text) {
         throw new Error(
-          "Gemini không trả về text."
+          "Gemini không trả về nội dung."
         );
       }
 
@@ -980,20 +1086,15 @@ ${userText}
       );
 
       /*
-       * 404:
-       * model không tồn tại / không còn hỗ trợ.
-       *
-       * 429:
-       * quota/rate limit.
-       *
-       * Cả hai đều thử model tiếp theo.
+       * Nếu một model lỗi thì
+       * thử model kế tiếp.
        */
       continue;
     }
   }
 
   throw new Error(
-    `Tất cả Gemini model đều lỗi: ${
+    `Gemini lỗi: ${
       lastError?.message ||
       "Unknown error"
     }`
@@ -1015,6 +1116,25 @@ function normalizeWebhook(
     return null;
   }
 
+  /*
+   * Hỗ trợ:
+   *
+   * {
+   *   event_name,
+   *   message
+   * }
+   *
+   * và:
+   *
+   * {
+   *   ok: true,
+   *   result: {
+   *     event_name,
+   *     message
+   *   }
+   * }
+   */
+
   const data =
     body.result &&
     typeof body.result ===
@@ -1031,69 +1151,121 @@ function normalizeWebhook(
   const from =
     message.from || {};
 
+  /*
+   * QUAN TRỌNG:
+   *
+   * Lấy trực tiếp:
+   * message.chat.chat_type
+   *
+   * Không tự đoán GROUP bằng
+   * chatId === userId.
+   */
+  const rawChatType =
+    chat.chat_type || "";
+
   const chatType =
     String(
-      chat.chat_type ||
-        data.chat_type ||
-        ""
+      rawChatType
     ).toUpperCase();
 
-  /*
-   * Một số payload có thể dùng:
-   * GROUP
-   * group
-   * GROUP_CHAT
-   *
-   * nên kiểm tra rộng hơn.
-   */
-  const isGroup =
-    chatType ===
-      "GROUP" ||
-    chatType ===
-      "GROUP_CHAT" ||
-    chatType.includes(
-      "GROUP"
-    );
+  const chatId =
+    chat.id != null
+      ? String(chat.id)
+      : "";
+
+  const userId =
+    from.id != null
+      ? String(from.id)
+      : "";
+
+  const text =
+    typeof message.text ===
+    "string"
+      ? message.text.trim()
+      : "";
 
   return {
     eventName:
       data.event_name ||
-      data.event ||
       "",
 
     message,
 
-    chatId:
-      chat?.id
-        ? String(chat.id)
-        : "",
+    chat,
+
+    from,
+
+    chatId,
+
+    userId,
+
+    userName:
+      from.display_name ||
+      from.name ||
+      "",
 
     chatType,
 
-    isGroup,
+    isGroup:
+      chatType ===
+      "GROUP",
 
-    userId:
-      from?.id
-        ? String(from.id)
-        : "",
+    isPrivate:
+      chatType ===
+      "PRIVATE",
 
-    userName:
-      from?.display_name ||
-      from?.name ||
-      "",
-
-    text:
-      typeof message.text ===
-      "string"
-        ? message.text.trim()
-        : "",
+    text,
 
     messageId:
-      message?.message_id
+      message.message_id !=
+      null
         ? String(
             message.message_id
           )
         : "",
+  };
+}
+
+// ============================================================
+// COMMAND PARSER
+// ============================================================
+
+function parseCommand(
+  text
+) {
+  const value =
+    String(text || "")
+      .trim();
+
+  if (
+    !value.startsWith("/")
+  ) {
+    return null;
+  }
+
+  const parts =
+    value.split(/\s+/);
+
+  const raw =
+    parts[0]
+      .slice(1)
+      .split("@")[0]
+      .toLowerCase();
+
+  if (!raw) {
+    return null;
+  }
+
+  const args =
+    parts.slice(1);
+
+  return {
+    command: raw,
+
+    args,
+
+    text:
+      args.join(" "),
   };
 }
 
@@ -1108,19 +1280,17 @@ function registerCommand(
   name,
   config
 ) {
-  const normalizedName =
-    String(name)
-      .toLowerCase();
+  const normalized =
+    name.toLowerCase();
 
-  const command = {
-    name:
-      normalizedName,
+  const item = {
+    name: normalized,
     ...config,
   };
 
   COMMANDS.set(
-    normalizedName,
-    command
+    normalized,
+    item
   );
 
   if (
@@ -1133,16 +1303,15 @@ function registerCommand(
         config.aliases
     ) {
       COMMANDS.set(
-        String(alias)
-          .toLowerCase(),
-        command
+        alias.toLowerCase(),
+        item
       );
     }
   }
 }
 
 // ============================================================
-// /HELP
+// /help
 // ============================================================
 
 registerCommand(
@@ -1157,14 +1326,11 @@ registerCommand(
     description:
       "Hiện tất cả lệnh",
 
-    usage:
-      "/help",
-
-    adminOnly:
-      false,
+    adminOnly: false,
 
     async handler({
       chatId,
+      isGroup,
     }) {
       const unique =
         new Map();
@@ -1189,6 +1355,7 @@ registerCommand(
         "🤖 BOT MẶT ĐẤT MÀU XANH",
         "",
         "📚 TẤT CẢ LỆNH:",
+        "",
       ];
 
       for (
@@ -1196,20 +1363,18 @@ registerCommand(
           unique.values()
       ) {
         lines.push(
-          `• /${command.name} — ${
+          `/${command.name} — ${
             command.description ||
             ""
           }`
         );
       }
 
-      lines.push("");
       lines.push(
-        "👥 Trong nhóm: bot chỉ trả lời tin bắt đầu bằng /."
-      );
-
-      lines.push(
-        "💬 Chat riêng: có thể nhắn bình thường."
+        "",
+        isGroup
+          ? "👥 Trong nhóm: chỉ lệnh bắt đầu bằng / mới được xử lý."
+          : "💬 Chat riêng: có thể nhắn bình thường để hỏi AI."
       );
 
       await sendMessage(
@@ -1221,7 +1386,7 @@ registerCommand(
 );
 
 // ============================================================
-// /PING
+// /ping
 // ============================================================
 
 registerCommand(
@@ -1230,11 +1395,7 @@ registerCommand(
     description:
       "Kiểm tra bot",
 
-    usage:
-      "/ping",
-
-    adminOnly:
-      false,
+    adminOnly: false,
 
     async handler({
       chatId,
@@ -1248,7 +1409,7 @@ registerCommand(
 );
 
 // ============================================================
-// /ID
+// /id
 // ============================================================
 
 registerCommand(
@@ -1257,39 +1418,33 @@ registerCommand(
     description:
       "Xem User ID và Chat ID",
 
-    usage:
-      "/id",
-
-    adminOnly:
-      false,
+    adminOnly: false,
 
     async handler({
       chatId,
       userId,
       chatType,
-      isGroup,
     }) {
       await sendMessage(
         chatId,
         [
-          "🆔 THÔNG TIN ID",
+          "🆔 THÔNG TIN",
+
           "",
-          `Chat ID: ${
-            chatId ||
-            "Không có"
-          }`,
+
           `User ID: ${
             userId ||
             "Không có"
           }`,
+
+          `Chat ID: ${
+            chatId ||
+            "Không có"
+          }`,
+
           `Chat type: ${
             chatType ||
-            "Không rõ"
-          }`,
-          `Group: ${
-            isGroup
-              ? "true"
-              : "false"
+            "Không có"
           }`,
         ].join("\n")
       );
@@ -1298,7 +1453,7 @@ registerCommand(
 );
 
 // ============================================================
-// /BOT
+// /bot
 // ============================================================
 
 registerCommand(
@@ -1307,41 +1462,37 @@ registerCommand(
     description:
       "Xem thông tin bot",
 
-    usage:
-      "/bot",
-
-    adminOnly:
-      false,
+    adminOnly: false,
 
     async handler({
       chatId,
     }) {
-      const name =
-        botInfo?.display_name ||
-        botInfo?.account_name ||
-        "Bot Mặt Đất Màu Xanh";
-
       await sendMessage(
         chatId,
         [
           "🤖 BOT INFO",
           "",
-          `Tên: ${name}`,
-          "AI: Google Gemini",
+          `Tên: ${
+            botInfo?.display_name ||
+            botInfo?.account_name ||
+            "Bot Mặt Đất Màu Xanh"
+          }`,
+          `AI: Google Gemini`,
           `Model: ${
             activeGeminiModel ||
             GEMINI_MODELS[0]
           }`,
           "Tác giả: An Na & Hoàng Vũ",
+          "",
           `Bot: ${
             botEnabled
               ? "🟢 ON"
               : "🔴 OFF"
           }`,
           `Chế độ: ${
-            relaxedMode
-              ? "😎 THOẢI MÁI"
-              : "🛡️ BÌNH THƯỜNG"
+            freeMode
+              ? "🔥 BATQUYTAC"
+              : "🟢 BÌNH THƯỜNG"
           }`,
         ].join("\n")
       );
@@ -1350,36 +1501,42 @@ registerCommand(
 );
 
 // ============================================================
-// /AD
+// /ad
 // ============================================================
 
 registerCommand(
   "ad",
   {
     description:
-      "Kiểm tra quyền admin",
+      "Kiểm tra mình có phải admin không",
 
-    usage:
-      "/ad",
-
-    adminOnly:
-      false,
+    adminOnly: false,
 
     async handler({
       chatId,
       userId,
-      isAdmin,
+      userName,
     }) {
-      if (isAdmin) {
+      const admin =
+        isAdmin(
+          userId,
+          chatId
+        );
+
+      if (admin) {
         await sendMessage(
           chatId,
           [
             "👑 ADMIN CHECK",
             "",
             "✅ Bạn là ADMIN.",
-            `🆔 User ID: ${
-              userId ||
+            `Tên: ${
+              userName ||
               "Không có"
+            }`,
+            `ID: ${
+              userId ||
+              chatId
             }`,
           ].join("\n")
         );
@@ -1390,9 +1547,9 @@ registerCommand(
             "👤 ADMIN CHECK",
             "",
             "❌ Bạn không phải admin.",
-            `🆔 User ID: ${
+            `ID: ${
               userId ||
-              "Không có"
+              chatId
             }`,
           ].join("\n")
         );
@@ -1402,20 +1559,16 @@ registerCommand(
 );
 
 // ============================================================
-// /ADMINID
+// /adminid
 // ============================================================
 
 registerCommand(
   "adminid",
   {
     description:
-      "Xem danh sách admin",
+      "Xem cấu hình admin",
 
-    usage:
-      "/adminid",
-
-    adminOnly:
-      true,
+    adminOnly: true,
 
     async handler({
       chatId,
@@ -1423,16 +1576,15 @@ registerCommand(
       await sendMessage(
         chatId,
         [
-          "👑 DANH SÁCH ADMIN",
+          "👑 ADMIN CONFIG",
           "",
-          ADMIN_IDS.size
-            ? [...ADMIN_IDS]
-                .map(
-                  (id, index) =>
-                    `${index + 1}. ${id}`
-                )
-                .join("\n")
-            : "Chưa có admin.",
+          `Số admin: ${ADMIN_IDS.length}`,
+          ...ADMIN_IDS.map(
+            (id, index) =>
+              `Admin ${
+                index + 1
+              }: ${id}`
+          ),
         ].join("\n")
       );
     },
@@ -1440,35 +1592,41 @@ registerCommand(
 );
 
 // ============================================================
-// /OFF
+// /off
 // ============================================================
 
 registerCommand(
   "off",
   {
     description:
-      "Tắt bot toàn cục",
+      "Tắt AI toàn bot",
 
-    usage:
-      "/off",
-
-    adminOnly:
-      true,
+    adminOnly: true,
 
     async handler({
       chatId,
       userId,
+      userName,
     }) {
-      if (!botEnabled) {
+      const adminName =
+        getAdminLabel(
+          userId,
+          chatId,
+          userName
+        );
+
+      if (
+        !botEnabled
+      ) {
         await sendMessage(
           chatId,
           [
-            "🔴 BOT ĐÃ ĐƯỢC TẮT.",
+            "🔴 BOT ĐÃ OFF.",
             "",
-            `Admin tắt bot: ${
+            `Lệnh đã được ${
               botDisabledBy ||
-              "Không rõ"
-            }`,
+              "một admin"
+            } sử dụng.`,
             "",
             "Dùng /on để bật lại.",
           ].join("\n")
@@ -1481,19 +1639,17 @@ registerCommand(
         false;
 
       botDisabledBy =
-        String(
-          userId
-        );
+        adminName;
 
       await sendMessage(
         chatId,
         [
-          "🔴 ĐÃ TẮT BOT TOÀN CỤC.",
+          "🔴 ĐÃ TẮT BOT.",
           "",
-          `Admin thực hiện: ${userId}`,
+          `Bởi: ${adminName}`,
           "",
-          "Admin khác dùng /off sẽ không thể tắt lần nữa.",
-          "Dùng /on để bật lại.",
+          "Toàn bộ AI đã OFF.",
+          "Chỉ admin mới có thể /on lại.",
         ].join("\n")
       );
     },
@@ -1501,29 +1657,35 @@ registerCommand(
 );
 
 // ============================================================
-// /ON
+// /on
 // ============================================================
 
 registerCommand(
   "on",
   {
     description:
-      "Bật bot lại",
+      "Bật lại AI toàn bot",
 
-    usage:
-      "/on",
-
-    adminOnly:
-      true,
+    adminOnly: true,
 
     async handler({
       chatId,
       userId,
+      userName,
     }) {
-      if (botEnabled) {
+      const adminName =
+        getAdminLabel(
+          userId,
+          chatId,
+          userName
+        );
+
+      if (
+        botEnabled
+      ) {
         await sendMessage(
           chatId,
-          "🟢 BOT ĐANG BẬT SẴN."
+          "🟢 BOT ĐANG ON RỒI."
         );
 
         return;
@@ -1541,13 +1703,12 @@ registerCommand(
       await sendMessage(
         chatId,
         [
-          "🟢 ĐÃ BẬT BOT LẠI.",
+          "🟢 ĐÃ BẬT BOT.",
           "",
-          `Admin bật lại: ${userId}`,
-          `Admin đã tắt trước đó: ${
-            previous ||
-            "Không rõ"
-          }`,
+          `Bởi: ${adminName}`,
+          previous
+            ? `\nTrước đó bot được tắt bởi: ${previous}`
+            : "",
         ].join("\n")
       );
     },
@@ -1555,39 +1716,62 @@ registerCommand(
 );
 
 // ============================================================
-// /BATQUYTAC
+// /batquytac
 // ============================================================
 
 registerCommand(
   "batquytac",
   {
     description:
-      "Bật chế độ trò chuyện thoải mái",
+      "Bật chế độ trả lời tự do hơn",
 
-    usage:
-      "/batquytac",
-
-    adminOnly:
-      true,
+    adminOnly: true,
 
     async handler({
       chatId,
       userId,
+      userName,
     }) {
-      relaxedMode =
+      const adminName =
+        getAdminLabel(
+          userId,
+          chatId,
+          userName
+        );
+
+      if (
+        freeMode
+      ) {
+        await sendMessage(
+          chatId,
+          [
+            "🔥 CHẾ ĐỘ BATQUYTAC ĐANG BẬT.",
+            "",
+            `Được bật bởi: ${
+              freeModeBy ||
+              adminName
+            }`,
+          ].join("\n")
+        );
+
+        return;
+      }
+
+      freeMode =
         true;
+
+      freeModeBy =
+        adminName;
 
       await sendMessage(
         chatId,
         [
-          "😎 ĐÃ BẬT CHẾ ĐỘ THOẢI MÁI.",
+          "🔥 ĐÃ BẬT BATQUYTAC.",
           "",
-          "Bot sẽ trả lời tự nhiên và linh hoạt hơn.",
-          "Các giới hạn an toàn bắt buộc của hệ thống vẫn được áp dụng.",
+          `Bởi: ${adminName}`,
           "",
-          `Admin: ${userId}`,
-          "",
-          "Dùng /tatbatquytac để tắt.",
+          "Bot sẽ trả lời tự do và tự nhiên hơn.",
+          "Chế độ này không vô hiệu hóa các giới hạn an toàn của AI.",
         ].join("\n")
       );
     },
@@ -1595,36 +1779,58 @@ registerCommand(
 );
 
 // ============================================================
-// /TATBATQUYTAC
+// /tatbatquytac
 // ============================================================
 
 registerCommand(
   "tatbatquytac",
   {
     description:
-      "Tắt chế độ trò chuyện thoải mái",
+      "Tắt chế độ batquytac",
 
-    usage:
-      "/tatbatquytac",
-
-    adminOnly:
-      true,
+    adminOnly: true,
 
     async handler({
       chatId,
       userId,
+      userName,
     }) {
-      relaxedMode =
+      const adminName =
+        getAdminLabel(
+          userId,
+          chatId,
+          userName
+        );
+
+      if (
+        !freeMode
+      ) {
+        await sendMessage(
+          chatId,
+          "🟢 BATQUYTAC ĐANG TẮT RỒI."
+        );
+
+        return;
+      }
+
+      const previous =
+        freeModeBy;
+
+      freeMode =
         false;
+
+      freeModeBy =
+        null;
 
       await sendMessage(
         chatId,
         [
-          "🛡️ ĐÃ TẮT CHẾ ĐỘ THOẢI MÁI.",
+          "🟢 ĐÃ TẮT BATQUYTAC.",
           "",
-          "Bot quay lại chế độ bình thường.",
-          "",
-          `Admin: ${userId}`,
+          `Bởi: ${adminName}`,
+          previous
+            ? `Trước đó được bật bởi: ${previous}`
+            : "",
         ].join("\n")
       );
     },
@@ -1632,69 +1838,39 @@ registerCommand(
 );
 
 // ============================================================
-// /GHINHO
-// ============================================================
-//
-// CÚ PHÁP:
-//
-// /ghinho Anh Hoàng Vũ
-//
-// -> chỉ nhớ trigger.
-//
-//
-//
-// /ghinho Anh Hoàng Vũ - Anh ấy K7
-//
-// -> trigger: Anh Hoàng Vũ
-// -> answer : Anh ấy K7
-//
-//
-// /ghinho rên đi em - ~~
-//
-// -> trigger: rên đi em
-// -> answer : ~~
-//
-// Chỉ ADMIN dùng được.
+// /ghinho
 // ============================================================
 
 registerCommand(
   "ghinho",
   {
     description:
-      "Admin thêm thông tin ghi nhớ",
+      "Admin ghi nhớ thông tin",
 
-    usage:
-      "/ghinho <nội dung> [- câu trả lời]",
-
-    adminOnly:
-      true,
+    adminOnly: true,
 
     async handler({
       chatId,
-      userId,
       text,
     }) {
-      const value =
-        String(
-          text || ""
-        ).trim();
-
-      if (!value) {
+      if (!text) {
         await sendMessage(
           chatId,
           [
-            "🧠 CÁCH DÙNG:",
+            "🧠 CÁCH DÙNG /ghinho",
             "",
-            "/ghinho Anh Hoàng Vũ",
+            "/ghinho Anh Hoàng Vũ (Sun) - anh ấy k7",
             "",
-            "Hoặc:",
-            "/ghinho Anh Hoàng Vũ - Anh ấy K7",
+            "Bot sẽ nhớ:",
+            "Anh Hoàng Vũ (Sun)",
             "",
-            "Hoặc:",
-            "/ghinho rên đi em - ~~",
+            "Và trả lời:",
+            "anh ấy k7",
             "",
-            "Có dấu '-' thì phần trước là nội dung nhớ, phần sau là câu bot trả lời.",
-            "Không có '-' thì bot chỉ ghi nhớ phần đó.",
+            "Nếu không có dấu -:",
+            "/ghinho Anh Hoàng Vũ (Sun)",
+            "",
+            "Bot sẽ lưu nguyên phần đó.",
           ].join("\n")
         );
 
@@ -1702,43 +1878,41 @@ registerCommand(
       }
 
       /*
-       * Chỉ tách dấu '-' đầu tiên.
+       * Chỉ tách dấu "-" đầu tiên.
        *
        * Ví dụ:
        *
-       * "abc - xyz - 123"
+       * abc - xyz - 123
        *
        * trigger = abc
        * answer  = xyz - 123
        */
-      const separator =
-        value.indexOf(
-          " - "
-        );
+      const dashIndex =
+        text.indexOf("-");
 
-      let trigger =
-        value;
-
-      let answer =
-        "";
+      let trigger;
+      let answer;
 
       if (
-        separator !==
-        -1
+        dashIndex === -1
       ) {
         trigger =
-          value
+          text.trim();
+
+        answer = "";
+      } else {
+        trigger =
+          text
             .slice(
               0,
-              separator
+              dashIndex
             )
             .trim();
 
         answer =
-          value
+          text
             .slice(
-              separator +
-                3
+              dashIndex + 1
             )
             .trim();
       }
@@ -1752,25 +1926,9 @@ registerCommand(
         return;
       }
 
-      const normalizedTrigger =
-        normalizeText(
-          trigger
-        );
-
-      MEMORY.set(
-        normalizedTrigger,
-        {
-          trigger,
-          answer:
-            answer ||
-            "",
-          createdBy:
-            String(
-              userId
-            ),
-          createdAt:
-            new Date().toISOString(),
-        }
+      addMemory(
+        trigger,
+        answer
       );
 
       await sendMessage(
@@ -1778,13 +1936,11 @@ registerCommand(
         [
           "🧠 ĐÃ GHI NHỚ.",
           "",
-          `📌 Nội dung: ${trigger}`,
-          answer
-            ? `💬 Câu trả lời: ${answer}`
-            : "💬 Câu trả lời: dùng nội dung ghi nhớ để hỗ trợ AI.",
-          "",
-          `👑 Admin: ${userId}`,
-          `📚 Tổng ghi nhớ: ${MEMORY.size}`,
+          `🔑 Từ khóa: ${trigger}`,
+          `💬 Trả lời: ${
+            answer ||
+            "(lưu nội dung, không ép câu trả lời cố định)"
+          }`,
         ].join("\n")
       );
     },
@@ -1792,142 +1948,103 @@ registerCommand(
 );
 
 // ============================================================
-// MEMORY BUILT-IN
+// /xoaghinho
 // ============================================================
 
-MEMORY.set(
-  normalizeText(
-    "ai tạo ra bot mặt đất màu xanh"
-  ),
+registerCommand(
+  "xoaghinho",
   {
-    trigger:
-      "ai tạo ra bot mặt đất màu xanh",
+    description:
+      "Admin xóa một ghi nhớ",
 
-    answer:
-      "An Na & Hoàng Vũ.",
+    adminOnly: true,
 
-    createdBy:
-      "SYSTEM",
+    async handler({
+      chatId,
+      text,
+    }) {
+      if (!text) {
+        await sendMessage(
+          chatId,
+          "Dùng: /xoaghinho <từ khóa>"
+        );
 
-    createdAt:
-      new Date().toISOString(),
-  }
-);
+        return;
+      }
 
-MEMORY.set(
-  normalizeText(
-    "ai làm bot này"
-  ),
-  {
-    trigger:
-      "ai làm bot này",
+      const removed =
+        removeMemory(
+          text
+        );
 
-    answer:
-      "An Na & Hoàng Vũ.",
-
-    createdBy:
-      "SYSTEM",
-
-    createdAt:
-      new Date().toISOString(),
-  }
-);
-
-MEMORY.set(
-  normalizeText(
-    "bot này của ai"
-  ),
-  {
-    trigger:
-      "bot này của ai",
-
-    answer:
-      "An Na & Hoàng Vũ.",
-
-    createdBy:
-      "SYSTEM",
-
-    createdAt:
-      new Date().toISOString(),
+      await sendMessage(
+        chatId,
+        removed
+          ? "🗑️ Đã xóa ghi nhớ."
+          : "❌ Không tìm thấy ghi nhớ."
+      );
+    },
   }
 );
 
 // ============================================================
-// PARSE COMMAND
+// /dsghinho
 // ============================================================
 
-function parseCommand(
-  text
-) {
-  const value =
-    String(
-      text || ""
-    ).trim();
+registerCommand(
+  "dsghinho",
+  {
+    description:
+      "Admin xem danh sách ghi nhớ",
 
-  if (
-    !value.startsWith(
-      "/"
-    )
-  ) {
-    return null;
+    adminOnly: true,
+
+    async handler({
+      chatId,
+    }) {
+      if (
+        MEMORY_RULES.length ===
+        0
+      ) {
+        await sendMessage(
+          chatId,
+          "🧠 Chưa có ghi nhớ nào."
+        );
+
+        return;
+      }
+
+      const lines = [
+        "🧠 DANH SÁCH GHI NHỚ",
+        "",
+      ];
+
+      MEMORY_RULES.forEach(
+        (
+          item,
+          index
+        ) => {
+          lines.push(
+            `${index + 1}. ${item.trigger}`
+          );
+
+          if (
+            item.answer
+          ) {
+            lines.push(
+              `   → ${item.answer}`
+            );
+          }
+        }
+      );
+
+      await sendMessage(
+        chatId,
+        lines.join("\n")
+      );
+    },
   }
-
-  const parts =
-    value.split(
-      /\s+/
-    );
-
-  const rawCommand =
-    parts[0]
-      .slice(1)
-      .split("@")[0]
-      .toLowerCase();
-
-  const args =
-    parts.slice(1);
-
-  if (!rawCommand) {
-    return null;
-  }
-
-  return {
-    command:
-      rawCommand,
-
-    args,
-
-    text:
-      args.join(" "),
-  };
-}
-
-// ============================================================
-// IS ADMIN
-// ============================================================
-
-function isAdmin(
-  userId,
-  chatId
-) {
-  const user =
-    String(
-      userId || ""
-    );
-
-  const chat =
-    String(
-      chatId || ""
-    );
-
-  return (
-    ADMIN_IDS.has(
-      user
-    ) ||
-    ADMIN_IDS.has(
-      chat
-    )
-  );
-}
+);
 
 // ============================================================
 // HANDLE COMMAND
@@ -1975,8 +2092,11 @@ async function handleCommand(
 
   await command.handler({
     ...update,
+
     ...parsed,
-    isAdmin: admin,
+
+    isAdmin:
+      admin,
   });
 
   return true;
@@ -1993,9 +2113,10 @@ async function handleMessage(
     chatId,
     userId,
     userName,
-    text,
-    isGroup,
     chatType,
+    isGroup,
+    isPrivate,
+    text,
   } = update;
 
   if (
@@ -2006,78 +2127,45 @@ async function handleMessage(
   }
 
   log(
-    "================================================"
+    "=================================================="
   );
 
   log(
-    `👤 USER: ${
-      userName ||
+    "👤 USER:",
+    userName ||
       "Unknown"
-    }`
   );
 
   log(
-    `🆔 USER ID: ${
-      userId ||
+    "🆔 USER ID:",
+    userId ||
       "Unknown"
-    }`
   );
 
   log(
-    `💬 CHAT ID: ${
-      chatId
-    }`
+    "💬 CHAT ID:",
+    chatId
   );
 
   log(
-    `👥 GROUP: ${
-      isGroup
-    }`
+    "👥 CHAT TYPE:",
+    chatType ||
+      "UNKNOWN"
   );
 
   log(
-    `📌 CHAT TYPE: ${
-      chatType ||
-      "Unknown"
-    }`
+    "👥 IS GROUP:",
+    isGroup
   );
 
   log(
-    `💬 TEXT: ${
-      text
-    }`
+    "💬 TEXT:",
+    text
   );
 
-  // ==========================================================
-  // GROUP MODE
-  // ==========================================================
-  //
-  // Trong nhóm:
-  //
-  // "Hello"
-  //
-  // -> BỎ QUA
-  //
-  // "/ping"
-  //
-  // -> XỬ LÝ
-  //
-  // "/hỏi Gemini..."
-  //
-  // -> Nếu không phải command thì đưa vào Gemini.
-  //
-  // ==========================================================
-
-  if (
-    isGroup &&
-    !text.startsWith("/")
-  ) {
-    log(
-      "👥 GROUP MESSAGE KHÔNG CÓ / -> BỎ QUA"
-    );
-
-    return;
-  }
+  log(
+    "=================================================="
+  );
 
   // ==========================================================
   // COMMAND
@@ -2088,9 +2176,19 @@ async function handleMessage(
       text
     );
 
-  if (
-    parsed
-  ) {
+  /*
+   * Nếu là lệnh:
+   * xử lý trước cả BOT OFF.
+   *
+   * Nhờ vậy admin vẫn dùng được:
+   * /on
+   * /off
+   * /ad
+   * /batquytac
+   * /tatbatquytac
+   * khi bot đang OFF.
+   */
+  if (parsed) {
     const exists =
       COMMANDS.has(
         parsed.command
@@ -2117,47 +2215,12 @@ async function handleMessage(
             chatId,
             "❌ Lệnh bị lỗi. Kiểm tra log Render."
           );
-        } catch (
-          sendError
-        ) {
-          log(
-            "❌ SEND COMMAND ERROR:",
-            sendError.message
-          );
-        }
+        } catch {}
       }
 
       return;
     }
 
-    /*
-     * Trong nhóm:
-     *
-     * /hello
-     *
-     * không phải command.
-     *
-     * Cho phép đưa phần sau "/" cho Gemini.
-     */
-    if (
-      isGroup &&
-      parsed.text
-    ) {
-      log(
-        `🧠 GROUP AI COMMAND: ${parsed.text}`
-      );
-
-      await askAndReply(
-        update,
-        parsed.text
-      );
-
-      return;
-    }
-
-    /*
-     * Chat riêng dùng /abc không tồn tại:
-     */
     await sendMessage(
       chatId,
       [
@@ -2171,39 +2234,39 @@ async function handleMessage(
   }
 
   // ==========================================================
-  // MEMORY DIRECT ANSWER
+  // GROUP FILTER
   // ==========================================================
 
-  const remembered =
-    findMemory(
-      text
-    );
-
+  /*
+   * Đây là phần QUAN TRỌNG cho nhóm.
+   *
+   * Nếu chat_type === GROUP:
+   *
+   * "Hello"
+   * "Bot ơi"
+   * "Có đó không"
+   *
+   * => KHÔNG trả lời.
+   *
+   * Chỉ lệnh /xxx mới chạy.
+   */
   if (
-    remembered &&
-    remembered.answer
+    isGroup &&
+    !text.startsWith("/")
   ) {
     log(
-      "🧠 MEMORY HIT:",
-      remembered.trigger
+      "👥 GROUP MESSAGE -> bỏ qua vì không bắt đầu bằng /"
     );
-
-    try {
-      await sendMessage(
-        chatId,
-        remembered.answer
-      );
-    } catch (
-      error
-    ) {
-      log(
-        "❌ SEND MEMORY ERROR:",
-        error.message
-      );
-    }
 
     return;
   }
+
+  /*
+   * Nếu Zalo gửi một chat type khác GROUP
+   * nhưng ID là group thì vẫn không nên tự đoán.
+   *
+   * Chỉ dùng chat_type chính thức.
+   */
 
   // ==========================================================
   // BOT OFF
@@ -2213,11 +2276,41 @@ async function handleMessage(
     !botEnabled
   ) {
     log(
-      `🔴 BOT OFF - bỏ qua tin nhắn. Disabled by: ${
-        botDisabledBy ||
-        "Unknown"
-      }`
+      "🔴 BOT OFF -> bỏ qua AI."
     );
+
+    return;
+  }
+
+  // ==========================================================
+  // MEMORY
+  // ==========================================================
+
+  const memory =
+    findMemory(
+      text
+    );
+
+  if (
+    memory &&
+    memory.answer
+  ) {
+    log(
+      "🧠 MEMORY HIT:",
+      memory.trigger
+    );
+
+    try {
+      await sendMessage(
+        chatId,
+        memory.answer
+      );
+    } catch (error) {
+      log(
+        "❌ MEMORY SEND ERROR:",
+        error.message
+      );
+    }
 
     return;
   }
@@ -2225,40 +2318,6 @@ async function handleMessage(
   // ==========================================================
   // GEMINI
   // ==========================================================
-
-  await askAndReply(
-    update,
-    text
-  );
-}
-
-// ============================================================
-// ASK AND REPLY
-// ============================================================
-
-async function askAndReply(
-  update,
-  text
-) {
-  const {
-    chatId,
-    userName,
-  } = update;
-
-  if (
-    !text ||
-    !String(
-      text
-    ).trim()
-  ) {
-    return;
-  }
-
-  if (
-    !botEnabled
-  ) {
-    return;
-  }
 
   await sendTyping(
     chatId
@@ -2288,66 +2347,21 @@ async function askAndReply(
     log(
       "✅ ĐÃ GỬI TRẢ LỜI"
     );
-  } catch (
-    error
-  ) {
+  } catch (error) {
     log(
       "❌ GEMINI ERROR:",
       error.message
     );
 
-    /*
-     * Nếu tất cả model đều hết quota,
-     * trả lời rõ ràng thay vì chỉ nói
-     * "kiểm tra API key".
-     */
-    const message =
-      String(
-        error.message ||
-          ""
-      );
-
-    let reply =
-      "😵 Bot đang gặp lỗi AI.\n\n";
-
-    if (
-      message.includes(
-        "429"
-      ) ||
-      message
-        .toLowerCase()
-        .includes(
-          "quota"
-        ) ||
-      message
-        .toLowerCase()
-        .includes(
-          "resource_exhausted"
-        )
-    ) {
-      reply +=
-        "⚠️ Gemini đang hết quota/rate limit. Hãy chờ quota reset hoặc dùng API key/project khác.";
-    } else if (
-      message.includes(
-        "404"
-      ) ||
-      message
-        .toLowerCase()
-        .includes(
-          "not_found"
-        )
-    ) {
-      reply +=
-        "⚠️ Model Gemini hiện tại không khả dụng. Kiểm tra GEMINI_MODEL trên Render.";
-    } else {
-      reply +=
-        "Vui lòng thử lại sau vài giây.";
-    }
-
     try {
       await sendMessage(
         chatId,
-        reply
+        [
+          "😵 Bot đang gặp lỗi AI.",
+          "",
+          "Gemini có thể đang hết quota hoặc tạm thời lỗi.",
+          "Thử lại sau một lúc.",
+        ].join("\n")
       );
     } catch (
       sendError
@@ -2372,16 +2386,12 @@ function verifyWebhook(
       "x-bot-api-secret-token"
     ];
 
-  if (
-    !received
-  ) {
+  if (!received) {
     return false;
   }
 
   const receivedString =
-    String(
-      received
-    );
+    String(received);
 
   const a =
     Buffer.from(
@@ -2429,28 +2439,11 @@ app.post(
         "🚫 WEBHOOK AUTH FAILED"
       );
 
-      log(
-        "Header secret:",
-        mask(
-          String(
-            req.headers[
-              "x-bot-api-secret-token"
-            ] || ""
-          )
-        )
-      );
-
-      log(
-        "Expected secret:",
-        mask(
-          WEBHOOK_SECRET
-        )
-      );
-
       return res
         .status(403)
         .json({
           ok: false,
+
           error:
             "Unauthorized",
         });
@@ -2484,25 +2477,27 @@ app.post(
     );
 
     log(
-      `📌 EVENT: ${
-        update.eventName
-      }`
+      "📌 EVENT:",
+      update.eventName
     );
 
     log(
-      `👥 GROUP: ${
-        update.isGroup
-      }`
+      "📌 CHAT TYPE:",
+      update.chatType
     );
 
     log(
-      `📌 CHAT TYPE: ${
-        update.chatType
-      }`
+      "📌 CHAT ID:",
+      update.chatId
+    );
+
+    log(
+      "📌 USER ID:",
+      update.userId
     );
 
     // --------------------------------------------------------
-    // TRẢ 200 NGAY
+    // ACK NGAY
     // --------------------------------------------------------
 
     res.json({
@@ -2539,22 +2534,12 @@ app.post(
       update.eventName ===
       "message.image.received"
     ) {
-      /*
-       * Trong group không tự động trả lời
-       * vì group chỉ phản hồi command "/".
-       */
-      if (
-        update.isGroup
-      ) {
-        return;
-      }
-
       if (
         update.chatId
       ) {
         sendMessage(
           update.chatId,
-          "🖼️ Bot đã nhận được ảnh. Chức năng xử lý ảnh sẽ bổ sung sau."
+          "🖼️ Bot đã nhận ảnh. Chức năng xử lý ảnh sẽ bổ sung sau."
         ).catch(
           (error) => {
             log(
@@ -2576,12 +2561,6 @@ app.post(
       update.eventName ===
       "message.sticker.received"
     ) {
-      if (
-        update.isGroup
-      ) {
-        return;
-      }
-
       if (
         update.chatId
       ) {
@@ -2610,12 +2589,6 @@ app.post(
       "message.voice.received"
     ) {
       if (
-        update.isGroup
-      ) {
-        return;
-      }
-
-      if (
         update.chatId
       ) {
         sendMessage(
@@ -2637,7 +2610,7 @@ app.post(
 );
 
 // ============================================================
-// HEALTH
+// HOME
 // ============================================================
 
 app.get(
@@ -2671,13 +2644,10 @@ app.get(
 
       botEnabled,
 
-      relaxedMode,
+      freeMode,
 
       adminCount:
-        ADMIN_IDS.size,
-
-      memoryCount:
-        MEMORY.size,
+        ADMIN_IDS.length,
 
       webhook:
         PUBLIC_URL
@@ -2687,6 +2657,10 @@ app.get(
   }
 );
 
+// ============================================================
+// HEALTH
+// ============================================================
+
 app.get(
   "/health",
   (
@@ -2695,8 +2669,13 @@ app.get(
   ) => {
     res.json({
       ok: true,
+
       status:
         "online",
+
+      botEnabled,
+
+      freeMode,
     });
   }
 );
@@ -2712,35 +2691,19 @@ async function setWebhook() {
     return;
   }
 
-  if (
-    !PUBLIC_URL
-  ) {
+  if (!PUBLIC_URL) {
     log(
-      "⚠️ Không có PUBLIC_URL -> không set webhook."
+      "⚠️ Không có PUBLIC_URL -> bỏ qua setWebhook."
     );
 
     return;
-  }
-
-  if (
-    !PUBLIC_URL.startsWith(
-      "https://"
-    )
-  ) {
-    log(
-      "⚠️ PUBLIC_URL không phải HTTPS:",
-      PUBLIC_URL
-    );
   }
 
   const webhookUrl =
     `${PUBLIC_URL}/webhook`;
 
   log(
-    "🔗 ĐANG SET ZALO WEBHOOK:"
-  );
-
-  log(
+    "🔗 SET WEBHOOK:",
     webhookUrl
   );
 
@@ -2757,7 +2720,7 @@ async function setWebhook() {
     );
 
   log(
-    "📡 ZALO setWebhook:",
+    "📡 setWebhook:",
     JSON.stringify(
       data
     )
@@ -2767,7 +2730,7 @@ async function setWebhook() {
     data?.ok
   ) {
     log(
-      "✅ WEBHOOK ĐÃ ĐƯỢC SET"
+      "✅ WEBHOOK ĐÃ SET"
     );
   } else {
     throw new Error(
@@ -2797,9 +2760,7 @@ async function getWebhookInfo() {
     );
 
     return data;
-  } catch (
-    error
-  ) {
+  } catch (error) {
     log(
       "⚠️ getWebhookInfo:",
       error.message
@@ -2835,9 +2796,7 @@ async function testGemini() {
     );
 
     return true;
-  } catch (
-    error
-  ) {
+  } catch (error) {
     log(
       "❌ GEMINI TEST FAILED:",
       error.message
@@ -2863,9 +2822,7 @@ async function startup() {
   ) {
     try {
       await getMe();
-    } catch (
-      error
-    ) {
+    } catch (error) {
       log(
         "❌ ZALO getMe ERROR:",
         error.message
@@ -2895,9 +2852,7 @@ async function startup() {
       await setWebhook();
 
       await getWebhookInfo();
-    } catch (
-      error
-    ) {
+    } catch (error) {
       log(
         "❌ WEBHOOK SETUP ERROR:",
         error.message
@@ -2912,7 +2867,7 @@ async function startup() {
   console.log("");
 
   console.log(
-    "================================================"
+    "=================================================="
   );
 
   console.log(
@@ -2920,7 +2875,7 @@ async function startup() {
   );
 
   console.log(
-    "================================================"
+    "=================================================="
   );
 
   console.log(
@@ -2952,14 +2907,14 @@ async function startup() {
 
   console.log(
     `👑 ADMIN: ${
-      ADMIN_IDS.size
-        ? `${ADMIN_IDS.size} ADMIN`
+      ADMIN_IDS.length
+        ? `${ADMIN_IDS.length} ADMIN`
         : "CHƯA CẤU HÌNH"
     }`
   );
 
   console.log(
-    `🤖 BOT STATE: ${
+    `🤖 BOT: ${
       botEnabled
         ? "ON"
         : "OFF"
@@ -2967,21 +2922,20 @@ async function startup() {
   );
 
   console.log(
-    `😎 RELAXED MODE: ${
-      relaxedMode
+    `🔥 BATQUYTAC: ${
+      freeMode
         ? "ON"
         : "OFF"
     }`
   );
 
-  console.log(
-    `🧠 MEMORY: ${MEMORY.size}`
-  );
-
   console.log("");
 
   console.log(
-    "📚 COMMANDS:",
+    "📚 LỆNH:"
+  );
+
+  console.log(
     [
       ...new Set(
         [
@@ -2991,13 +2945,15 @@ async function startup() {
             `/${x.name}`
         )
       ),
-    ].join(", ")
+    ].join(
+      ", "
+    )
   );
 
   console.log("");
 
   console.log(
-    "👥 GROUP MODE: CHỈ TRẢ LỜI TIN BẮT ĐẦU BẰNG /"
+    "👥 GROUP MODE: chỉ xử lý tin nhắn bắt đầu bằng /"
   );
 
   console.log(
@@ -3005,7 +2961,7 @@ async function startup() {
   );
 
   console.log(
-    "================================================"
+    "=================================================="
   );
 }
 
@@ -3018,7 +2974,7 @@ app.listen(
   "0.0.0.0",
   () => {
     log(
-      `🚀 Server listening on ${PORT}`
+      `🚀 Server listening on port ${PORT}`
     );
 
     startup().catch(
