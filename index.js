@@ -1,3 +1,5 @@
+# Bot Mặt Đất Màu Xanh — Code hoàn chỉnh
+
 const express = require("express");
 const crypto = require("crypto");
 
@@ -321,6 +323,7 @@ function isBotMention(text) {
     "bot mat dat mau xanh"
   ];
 
+  // Tên bot lấy từ getMe()
   if (
     botName &&
     normalized.startsWith(
@@ -330,6 +333,7 @@ function isBotMention(text) {
     return true;
   }
 
+  // Tên cố định
   for (
     const alias of aliases
   ) {
@@ -342,6 +346,7 @@ function isBotMention(text) {
     }
   }
 
+  // @Bot /ping
   if (
     /^@\s*bot\b/i.test(
       value
@@ -375,6 +380,7 @@ function removeBotMention(text) {
         ""
     );
 
+  // @Bot + tên bot
   if (
     botName &&
     normalized.startsWith(
@@ -403,6 +409,7 @@ function removeBotMention(text) {
     }
   }
 
+  // @Bot Mat Dat Mau Xanh
   const fixedRegex =
     /^@\s*bot\s+mat\s+dat\s+mau\s+xanh\b/i;
 
@@ -417,6 +424,7 @@ function removeBotMention(text) {
       .trim();
   }
 
+  // @Bot
   if (
     /^@\s*bot\b/i.test(value)
   ) {
@@ -785,10 +793,7 @@ function getRememberedAnswer(
   const normalized =
     normalizeText(text);
 
-  // ==========================================================
-  // MEMORY MẶC ĐỊNH
-  // ==========================================================
-
+  // Memory mặc định
   for (
     const rule of
       defaultMemories
@@ -797,15 +802,16 @@ function getRememberedAnswer(
       const pattern of
         rule.patterns
     ) {
+      const normalizedPattern =
+        normalizeText(
+          pattern
+        );
+
       if (
         normalized ===
-          normalizeText(
-            pattern
-          ) ||
+          normalizedPattern ||
         normalized.includes(
-          normalizeText(
-            pattern
-          )
+          normalizedPattern
         )
       ) {
         return rule.answer;
@@ -813,25 +819,23 @@ function getRememberedAnswer(
     }
   }
 
-  // ==========================================================
-  // MEMORY ADMIN GHI NHỚ
-  // ==========================================================
-
+  // Memory do /ghinho tạo
   for (
     const [
       question,
       data
     ] of memories.entries()
   ) {
-
     if (
       normalized ===
         question ||
       normalized.includes(
         question
+      ) ||
+      question.includes(
+        normalized
       )
     ) {
-
       if (
         typeof data ===
         "string"
@@ -939,19 +943,19 @@ registerCommand(
           "",
           "📚 LỆNH:",
           "",
-          "@Bot /help",
+          "/help",
           "→ Xem lệnh.",
           "",
-          "@Bot /ping",
+          "/ping",
           "→ Kiểm tra bot.",
           "",
-          "@Bot /id",
+          "/id",
           "→ Xem ID.",
           "",
-          "@Bot /bot",
+          "/bot",
           "→ Thông tin bot.",
           "",
-          "@Bot /ad",
+          "/ad",
           "→ Kiểm tra Admin.",
           "",
           "💬 CHAT NHÓM:",
@@ -970,36 +974,36 @@ registerCommand(
         ];
 
         if (admin) {
-
           lines.push(
             "",
             "🔐 ADMIN:",
             "",
-            "@Bot /on",
+            "/on",
             "→ Bật bot.",
             "",
-            "@Bot /off",
+            "/off",
             "→ Tắt bot.",
             "",
-            "@Bot /batnhom",
+            "/batnhom",
             "→ Bật chat nhóm.",
             "",
-            "@Bot /tatnhom",
+            "/tatnhom",
             "→ Tắt chat nhóm.",
             "",
-            "@Bot /batquytac",
+            "/batquytac",
             "→ Bật chế độ đặc biệt.",
             "",
-            "@Bot /tatbatquytac",
+            "/tatbatquytac",
             "→ Tắt chế độ đặc biệt.",
             "",
-            "@Bot /ghinho câu hỏi - câu trả lời",
-            "→ Ghi nhớ kiểu một dòng.",
+            "/ghinho câu hỏi - câu trả lời",
+            "→ Ghi nhớ.",
             "",
-            "@Bot /ghinho câu hỏi",
+            "Hoặc ghi nhớ nhiều dòng:",
+            "/ghinho câu hỏi",
             "nội dung dòng 1",
             "nội dung dòng 2",
-            "→ Ghi nhớ kiểu nhiều dòng."
+            "nội dung dòng 3"
           );
         }
 
@@ -1239,7 +1243,6 @@ registerCommand(
         if (
           !groupChatEnabled
         ) {
-
           await sendMessage(
             chatId,
             "🔴 Chat nhóm đang tắt rồi."
@@ -1290,7 +1293,6 @@ registerCommand(
         if (
           groupChatEnabled
         ) {
-
           await sendMessage(
             chatId,
             "🟢 Chat nhóm đang bật rồi."
@@ -1374,15 +1376,16 @@ registerCommand(
 // ============================================================
 // GHINHO
 //
-// HỖ TRỢ 2 KIỂU:
+// HỖ TRỢ:
 //
-// KIỂU 1:
-// /ghinho câu hỏi - câu trả lời
+// 1. /ghinho câu hỏi - câu trả lời
 //
-// KIỂU 2:
-// /ghinho câu hỏi
-// câu trả lời dòng 1
-// câu trả lời dòng 2
+// 2. /ghinho câu hỏi
+//    dòng 1
+//    dòng 2
+//    dòng 3
+//
+// KHÔNG BẮT BUỘC DẤU "-"
 // ============================================================
 
 registerCommand(
@@ -1396,10 +1399,6 @@ registerCommand(
         text
       }) => {
 
-        // ======================================================
-        // KHÔNG CÓ NỘI DUNG
-        // ======================================================
-
         if (
           !text ||
           !text.trim()
@@ -1408,75 +1407,120 @@ registerCommand(
           await sendMessage(
             chatId,
             [
-              "🧠 CÁCH DÙNG /ghinho",
+              "🧠 CÁCH DÙNG /GHINHO",
               "",
-              "📌 Cách 1 - Có dấu gạch:",
-              "@Bot /ghinho Hoàng Vũ là ai - Hoàng Vũ là chủ bot",
+              "Cách 1:",
+              "@Bot /ghinho câu hỏi - câu trả lời",
               "",
-              "📌 Cách 2 - Không có dấu gạch:",
+              "Cách 2:",
+              "@Bot /ghinho câu hỏi",
+              "nội dung dòng 1",
+              "nội dung dòng 2",
+              "nội dung dòng 3",
+              "",
+              "Ví dụ:",
               "@Bot /ghinho thông tin về Hoàng Vũ",
-              "Tiktok hoangvu_102_ ( acc chính )",
-              "vuhoang_102 ( acc phụ )",
+              "Tiktok hoangvu_102_ (acc chính)",
+              "vuhoang_102 (acc phụ)",
               "YT @hoangvu_102",
               "Dịch vụ",
               "Buff like ff",
               "Cho thuê bot ff hđlv7, team 5, antilag",
-              "Nạp xu tiktok, done hộ,..."
+              "Nạp xu tiktok, done hộ, ..."
             ].join("\n")
           );
 
           return;
         }
 
+        // Giữ nguyên xuống dòng
         const raw =
-          text.trim();
+          String(text)
+            .replace(
+              /\r\n/g,
+              "\n"
+            )
+            .trim();
 
         let question = "";
         let answer = "";
 
-        // ======================================================
-        // KIỂU 1: CÓ " - "
-        // ======================================================
+        // ====================================================
+        // KIỂU CÓ DẤU -
+        //
+        // câu hỏi - câu trả lời
+        // ====================================================
+
+        const firstLineEnd =
+          raw.indexOf("\n");
+
+        const firstLine =
+          firstLineEnd === -1
+            ? raw
+            : raw
+                .slice(
+                  0,
+                  firstLineEnd
+                )
+                .trim();
+
+        const restLines =
+          firstLineEnd === -1
+            ? ""
+            : raw
+                .slice(
+                  firstLineEnd + 1
+                )
+                .trim();
+
+        // Tìm " - "
+        const dashIndex =
+          firstLine.indexOf(
+            " - "
+          );
 
         if (
-          raw.includes(" - ")
+          dashIndex !== -1
         ) {
 
-          const index =
-            raw.indexOf(" - ");
-
           question =
-            raw
+            firstLine
               .slice(
                 0,
-                index
+                dashIndex
               )
               .trim();
 
           answer =
-            raw
+            firstLine
               .slice(
-                index + 3
+                dashIndex + 3
               )
               .trim();
 
+          // Nếu phía dưới còn nhiều dòng
+          // thì giữ nguyên và nối vào answer
+          if (
+            restLines
+          ) {
+
+            answer =
+              answer
+                ? `${answer}\n${restLines}`
+                : restLines;
+          }
+
         } else {
 
-          // ====================================================
-          // KIỂU 2: KHÔNG CÓ GẠCH
-          // ====================================================
-
-          const lines =
-            raw
-              .split(/\r?\n/)
-              .map(
-                line =>
-                  line.trim()
-              )
-              .filter(Boolean);
+          // ==================================================
+          // KIỂU KHÔNG CÓ DẤU -
+          //
+          // dòng đầu = câu hỏi
+          // dòng sau = câu trả lời
+          // ==================================================
 
           if (
-            lines.length < 2
+            firstLineEnd === -1
           ) {
 
             await sendMessage(
@@ -1484,14 +1528,12 @@ registerCommand(
               [
                 "❌ Không xác định được nội dung.",
                 "",
-                "Dùng một trong hai kiểu:",
+                "Cần có câu hỏi và câu trả lời.",
                 "",
-                "/ghinho câu hỏi - câu trả lời",
-                "",
-                "Hoặc:",
-                "/ghinho câu hỏi",
-                "nội dung dòng 1",
-                "nội dung dòng 2"
+                "Ví dụ:",
+                "/ghinho thông tin về Hoàng Vũ",
+                "Tiktok hoangvu_102_",
+                "YT @hoangvu_102"
               ].join("\n")
             );
 
@@ -1499,49 +1541,59 @@ registerCommand(
           }
 
           question =
-            lines[0];
+            firstLine;
 
           answer =
-            lines
-              .slice(1)
-              .join("\n")
-              .trim();
+            restLines;
         }
 
-        // ======================================================
-        // KIỂM TRA
-        // ======================================================
+        // ====================================================
+        // KIỂM TRA CÂU HỎI
+        // ====================================================
 
         if (
-          !question ||
+          !question
+        ) {
+
+          await sendMessage(
+            chatId,
+            "❌ Câu hỏi đang bị trống."
+          );
+
+          return;
+        }
+
+        // ====================================================
+        // KIỂM TRA CÂU TRẢ LỜI
+        // ====================================================
+
+        if (
           !answer
         ) {
 
           await sendMessage(
             chatId,
             [
-              "❌ Câu hỏi hoặc câu trả lời bị trống.",
+              "❌ Câu trả lời đang bị trống.",
               "",
               "Ví dụ:",
-              "/ghinho Hoàng Vũ là ai - Hoàng Vũ là chủ bot"
+              "/ghinho thông tin về Hoàng Vũ",
+              "Tiktok hoangvu_102_",
+              "YT @hoangvu_102"
             ].join("\n")
           );
 
           return;
         }
 
-        // ======================================================
-        // NORMALIZE
-        // ======================================================
+        // ====================================================
+        // LƯU MEMORY
+        // ====================================================
 
         const normalizedQuestion =
           normalizeText(
             question
           );
-
-        // ======================================================
-        // LƯU
-        // ======================================================
 
         memories.set(
           normalizedQuestion,
@@ -1552,16 +1604,12 @@ registerCommand(
           }
         );
 
-        // ======================================================
+        // ====================================================
         // LOG
-        // ======================================================
+        // ====================================================
 
         log(
-          "=========================================="
-        );
-
-        log(
-          "MEMORY SAVED"
+          "MEMORY SAVED:"
         );
 
         log(
@@ -1574,20 +1622,17 @@ registerCommand(
           answer
         );
 
-        log(
-          "=========================================="
-        );
-
-        // ======================================================
+        // ====================================================
         // XÁC NHẬN
-        // ======================================================
+        // ====================================================
 
         await sendMessage(
           chatId,
           [
-            "✅ ĐÃ GHI NHỚ",
+            "✅ Đã ghi nhớ!",
             "",
-            `🧠 ${question}`,
+            "🧠 Câu hỏi:",
+            question,
             "",
             "🤖 Nội dung:",
             answer
@@ -1599,11 +1644,17 @@ registerCommand(
 
 // ============================================================
 // PARSE COMMAND
+//
+// QUAN TRỌNG:
+// KHÔNG split toàn bộ text bằng /\s+/
+//
+// Vì /ghinho có thể có nhiều dòng.
 // ============================================================
 
 function parseCommand(
   text
 ) {
+
   const value =
     String(text || "")
       .trim();
@@ -1614,8 +1665,14 @@ function parseCommand(
     return null;
   }
 
+  // Chỉ lấy dòng đầu để xác định command
+  const firstLine =
+    value
+      .split(/\r?\n/)[0]
+      .trim();
+
   const parts =
-    value.split(
+    firstLine.split(
       /\s+/
     );
 
@@ -1625,16 +1682,27 @@ function parseCommand(
       .split("@")[0]
       .toLowerCase();
 
+  // Độ dài của /command
+  const commandLength =
+    parts[0].length;
+
+  // Lấy NGUYÊN phần còn lại
+  // nên xuống dòng được giữ nguyên
+  const textAfterCommand =
+    value
+      .slice(commandLength)
+      .trim();
+
   return {
     command,
 
     args:
-      parts.slice(1),
+      textAfterCommand
+        .split(/\s+/)
+        .filter(Boolean),
 
     text:
-      parts
-        .slice(1)
-        .join(" ")
+      textAfterCommand
   };
 }
 
@@ -1646,6 +1714,7 @@ async function handleCommand(
   update,
   parsed
 ) {
+
   const command =
     COMMANDS.get(
       parsed.command
@@ -1700,6 +1769,7 @@ async function handleCommand(
 function normalizeWebhook(
   body
 ) {
+
   if (
     !body ||
     typeof body !==
@@ -1719,6 +1789,7 @@ function normalizeWebhook(
     data.message || {};
 
   return {
+
     eventName:
       data.event_name ||
       "",
@@ -1773,6 +1844,7 @@ function normalizeWebhook(
 async function handleMessage(
   update
 ) {
+
   const {
     chatId,
     userId,
@@ -1842,6 +1914,7 @@ async function handleMessage(
 
   // ==========================================================
   // GROUP
+  // CHỈ TRẢ LỜI KHI CÓ @BOT
   // ==========================================================
 
   let messageText =
@@ -1888,6 +1961,7 @@ async function handleMessage(
   } else {
 
     // Chat riêng
+    // Không cần @Bot
     messageText =
       text;
   }
@@ -1896,7 +1970,9 @@ async function handleMessage(
   // CHỈ @BOT
   // ==========================================================
 
-  if (!messageText) {
+  if (
+    !messageText
+  ) {
 
     await sendMessage(
       chatId,
@@ -1919,7 +1995,9 @@ async function handleMessage(
       messageText
     );
 
-  if (parsed) {
+  if (
+    parsed
+  ) {
 
     try {
 
@@ -1952,7 +2030,9 @@ async function handleMessage(
   // BOT OFF
   // ==========================================================
 
-  if (!botEnabled) {
+  if (
+    !botEnabled
+  ) {
 
     log(
       "BOT OFF -> IGNORE"
@@ -1970,7 +2050,9 @@ async function handleMessage(
       messageText
     );
 
-  if (remembered) {
+  if (
+    remembered
+  ) {
 
     log(
       "MEMORY HIT"
@@ -2057,12 +2139,15 @@ async function handleMessage(
 function verifyWebhook(
   req
 ) {
+
   const received =
     req.headers[
       "x-bot-api-secret-token"
     ];
 
-  if (!received) {
+  if (
+    !received
+  ) {
     return false;
   }
 
@@ -2136,7 +2221,9 @@ app.post(
       ok: true
     });
 
-    if (!update) {
+    if (
+      !update
+    ) {
       return;
     }
 
@@ -2158,6 +2245,7 @@ app.post(
         update
       ).catch(
         error => {
+
           log(
             "HANDLE MESSAGE ERROR:",
             error.message
@@ -2186,6 +2274,7 @@ app.post(
           "🖼️ Bot đã nhận được ảnh."
         ).catch(
           error => {
+
             log(
               "IMAGE ERROR:",
               error.message
@@ -2215,6 +2304,7 @@ app.post(
           "😎 Sticker đẹp đấy!"
         ).catch(
           error => {
+
             log(
               "STICKER ERROR:",
               error.message
@@ -2265,9 +2355,6 @@ app.get(
 
       adminCount:
         ADMIN_IDS.size,
-
-      memoryCount:
-        memories.size,
 
       webhook:
         PUBLIC_URL
@@ -2414,11 +2501,6 @@ async function startup() {
     groupChatEnabled
       ? "ON"
       : "OFF"
-  );
-
-  console.log(
-    "MEMORY:",
-    "ON"
   );
 
   console.log(
