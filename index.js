@@ -1,244 +1,293 @@
 const express = require("express");
 
 const app = express();
+app.use(express.json({ limit: "2mb" }));
 
-app.use(
-  express.json({
-    limit: "2mb"
-  })
-);
-
-// =====================================================
+// ============================================================
 // CONFIG
-// =====================================================
+// ============================================================
 
 const PORT = process.env.PORT || 10000;
 
-const ZALO_BOT_TOKEN =
-  process.env.ZALO_BOT_TOKEN || "";
+const ZALO_BOT_TOKEN = (process.env.ZALO_BOT_TOKEN || "").trim();
+const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
 
-const GROQ_API_KEY =
-  process.env.GROQ_API_KEY || "";
+const ADMIN_ID = (process.env.ADMIN_ID || "").trim();
 
-const ADMIN_ID =
-  process.env.ADMIN_ID || "";
+// Model mặc định hiện dùng ổn trên Groq
+const AI_MODEL =
+  (process.env.AI_MODEL || "llama-3.1-8b-instant").trim();
 
-// Có thể để trống.
-// Code sẽ tự tìm model khả dụng.
-const REQUESTED_MODEL =
-  process.env.AI_MODEL || "llama-3.3-70b-versatile";
+const BOT_NAME =
+  process.env.BOT_NAME || "Zalo AI Bot";
 
 
-// =====================================================
-// GLOBAL STATE
-// =====================================================
+// ============================================================
+// 🧠 CÂU GHI NHỚ MẶC ĐỊNH
+// ============================================================
+//
+// Muốn thêm sau này:
+// {
+//   patterns: ["câu 1", "câu 2"],
+//   answer: "câu trả lời"
+// }
+//
+// Bot sẽ kiểm tra các câu này TRƯỚC khi gọi AI.
+// ============================================================
 
-let ACTIVE_MODEL = REQUESTED_MODEL;
+const MEMORY_RULES = [
 
-let GROQ_STATUS = {
-  ok: false,
-  message: "Chưa kiểm tra",
-  models: []
-};
+  {
+    patterns: [
+      "ai tạo ra bot mặt đất màu xanh",
+      "ai tao ra bot mat dat mau xanh",
+      "ai tạo bot mặt đất màu xanh",
+      "ai tao bot mat dat mau xanh",
+      "ai là người tạo ra bot mặt đất màu xanh",
+      "ai la nguoi tao ra bot mat dat mau xanh",
+      "bot mặt đất màu xanh do ai tạo",
+      "bot mat dat mau xanh do ai tao",
+      "cha đẻ bot mặt đất màu xanh",
+      "cha de bot mat dat mau xanh"
+    ],
+
+    answer: "An Na & Hoàng Vũ"
+  }
+
+];
 
 
-// =====================================================
-// SAFE LOG
-// Không bao giờ in API key/token ra log
-// =====================================================
+// ============================================================
+// 🔧 THÊM LỆNH Ở ĐÂY
+// ============================================================
+//
+// Sau này muốn thêm:
+//
+// COMMANDS["/hello"] = async ({ userId }) => {
+//   await sendZaloMessage(userId, "Xin chào 👋");
+// };
+//
+// ============================================================
+
+const COMMANDS = {};
+
+
+// ============================================================
+// TEXT NORMALIZE
+// ============================================================
+
+function normalizeText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/[^\p{L}\p{N}\s/]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
+// ============================================================
+// MEMORY CHECK
+// ============================================================
+
+function checkMemory(text) {
+  const normalized = normalizeText(text);
+
+  for (const rule of MEMORY_RULES) {
+    for (const pattern of rule.patterns) {
+
+      const normalizedPattern =
+        normalizeText(pattern);
+
+      if (
+        normalized === normalizedPattern ||
+        normalized.includes(normalizedPattern) ||
+        normalizedPattern.includes(normalized)
+      ) {
+        return rule.answer;
+      }
+    }
+  }
+
+  return null;
+}
+
+
+// ============================================================
+// GET USER ID
+// ============================================================
+
+function getUserId(body) {
+  return (
+    body?.message?.from?.id ||
+    body?.message?.from?.user_id ||
+    body?.sender?.id ||
+    body?.user_id ||
+    body?.message?.chat?.id ||
+    null
+  );
+}
+
+
+// ============================================================
+// GET TEXT
+// ============================================================
+
+function getMessageText(body) {
+  return (
+    body?.message?.text ||
+    body?.message?.message?.text ||
+    body?.text ||
+    ""
+  );
+}
+
+
+// ============================================================
+// MASK SECRET
+// ============================================================
 
 function maskSecret(value) {
-  if (!value) return "THIẾU";
+  if (!value) return "MISSING";
 
   if (value.length <= 8) {
     return "********";
   }
 
   return (
-    value.substring(0, 4) +
+    value.slice(0, 4) +
     "********" +
-    value.substring(value.length - 4)
+    value.slice(-4)
   );
 }
 
 
-// =====================================================
-// GROQ - LẤY DANH SÁCH MODEL
-// =====================================================
+// ============================================================
+// GROQ CHECK API KEY
+// ============================================================
 
-async function getGroqModels() {
+async function checkGroqKey() {
+
   if (!GROQ_API_KEY) {
-    throw new Error(
-      "GROQ_API_KEY chưa được cấu hình trên Render"
-    );
-  }
-
-  const response = await fetch(
-    "https://api.groq.com/openai/v1/models",
-    {
-      method: "GET",
-
-      headers: {
-        "Authorization":
-          `Bearer ${GROQ_API_KEY}`,
-
-        "Content-Type":
-          "application/json"
-      }
-    }
-  );
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    console.error(
-      "❌ GROQ MODELS ERROR:",
-      JSON.stringify(data, null, 2)
-    );
-
-    throw new Error(
-      data?.error?.message ||
-      `Groq HTTP ${response.status}`
-    );
-  }
-
-  return Array.isArray(data?.data)
-    ? data.data
-    : [];
-}
-
-
-// =====================================================
-// GROQ - KIỂM TRA API KEY + MODEL
-// =====================================================
-
-async function checkGroq() {
-  try {
-    console.log("");
-    console.log("🔍 KIỂM TRA GROQ...");
-    console.log(
-      "🔑 GROQ_API_KEY:",
-      maskSecret(GROQ_API_KEY)
-    );
-
-    const models =
-      await getGroqModels();
-
-    const modelIds =
-      models
-        .map(model => model?.id)
-        .filter(Boolean);
-
-    GROQ_STATUS.models = modelIds;
-
-    console.log(
-      `📦 Groq trả về ${modelIds.length} model`
-    );
-
-    // -------------------------------------------------
-    // Ưu tiên model người dùng chọn
-    // -------------------------------------------------
-
-    const preferredModels = [
-      REQUESTED_MODEL,
-
-      "llama-3.3-70b-versatile",
-
-      "llama-3.1-8b-instant",
-
-      "openai/gpt-oss-120b",
-
-      "openai/gpt-oss-20b"
-    ];
-
-    const availableModel =
-      preferredModels.find(
-        model => modelIds.includes(model)
-      );
-
-    // -------------------------------------------------
-    // Nếu không có model ưu tiên
-    // chọn model đầu tiên có khả năng chat
-    // -------------------------------------------------
-
-    if (!availableModel) {
-      console.error(
-        "❌ Không tìm thấy model phù hợp."
-      );
-
-      console.error(
-        "📦 MODEL KHẢ DỤNG:"
-      );
-
-      console.error(
-        modelIds.join("\n")
-      );
-
-      GROQ_STATUS = {
-        ok: false,
-
-        message:
-          "API key hoạt động nhưng không tìm thấy model chat phù hợp",
-
-        models: modelIds
-      };
-
-      return false;
-    }
-
-    ACTIVE_MODEL =
-      availableModel;
-
-    GROQ_STATUS = {
-      ok: true,
-
-      message:
-        "Groq API key hoạt động",
-
-      models: modelIds
+    return {
+      ok: false,
+      message: "GROQ_API_KEY chưa được cấu hình"
     };
+  }
 
-    console.log(
-      "✅ GROQ API KEY: OK"
+  try {
+
+    const response = await fetch(
+      "https://api.groq.com/openai/v1/models",
+      {
+        method: "GET",
+        headers: {
+          "Authorization":
+            `Bearer ${GROQ_API_KEY}`
+        }
+      }
     );
 
-    console.log(
-      "🤖 GROQ MODEL:",
-      ACTIVE_MODEL
-    );
+    const data = await response.json();
 
-    return true;
+    if (!response.ok) {
+
+      return {
+        ok: false,
+        status: response.status,
+        message:
+          data?.error?.message ||
+          "Groq API Key không hợp lệ"
+      };
+    }
+
+    return {
+      ok: true,
+      message: "GROQ_API_KEY hợp lệ",
+      models: Array.isArray(data?.data)
+        ? data.data.map(x => x.id)
+        : []
+    };
 
   } catch (error) {
 
-    GROQ_STATUS = {
+    return {
       ok: false,
-
-      message:
-        error.message,
-
-      models: []
+      message: error.message
     };
-
-    console.error(
-      "❌ GROQ KEY ERROR:",
-      error.message
-    );
-
-    return false;
   }
 }
 
 
-// =====================================================
-// GROQ - HỎI AI
-// =====================================================
+// ============================================================
+// ZALO CHECK TOKEN
+// ============================================================
+//
+// Dùng endpoint getoa để xác thực token.
+// ============================================================
+
+async function checkZaloToken() {
+
+  if (!ZALO_BOT_TOKEN) {
+
+    return {
+      ok: false,
+      message: "ZALO_BOT_TOKEN chưa được cấu hình"
+    };
+  }
+
+  try {
+
+    const response = await fetch(
+      "https://openapi.zalo.me/v2.0/oa/getoa",
+      {
+        method: "GET",
+        headers: {
+          "access_token": ZALO_BOT_TOKEN
+        }
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok || data?.error !== 0) {
+
+      return {
+        ok: false,
+        status: response.status,
+        message:
+          data?.message ||
+          "Zalo Access Token không hợp lệ"
+      };
+    }
+
+    return {
+      ok: true,
+      message: "ZALO_BOT_TOKEN hợp lệ",
+      oa: data?.data || null
+    };
+
+  } catch (error) {
+
+    return {
+      ok: false,
+      message: error.message
+    };
+  }
+}
+
+
+// ============================================================
+// ASK GROQ
+// ============================================================
 
 async function askGroq(text) {
 
   if (!GROQ_API_KEY) {
     throw new Error(
-      "GROQ_API_KEY chưa cấu hình"
+      "GROQ_API_KEY chưa được cấu hình"
     );
   }
 
@@ -248,33 +297,36 @@ async function askGroq(text) {
       method: "POST",
 
       headers: {
-        "Content-Type":
-          "application/json",
-
+        "Content-Type": "application/json",
         "Authorization":
           `Bearer ${GROQ_API_KEY}`
       },
 
       body: JSON.stringify({
 
-        model: ACTIVE_MODEL,
+        model: AI_MODEL,
 
         messages: [
 
           {
             role: "system",
 
-            content:
-              "Bạn là trợ lý AI của bot Zalo. " +
-              "Trả lời bằng tiếng Việt, tự nhiên, thân thiện, " +
-              "chính xác và không quá dài nếu người dùng không yêu cầu."
+            content: `
+Bạn là AI của ${BOT_NAME}.
+
+Quy tắc:
+- Trả lời bằng tiếng Việt.
+- Tự nhiên, thân thiện.
+- Không nói dài dòng nếu không cần.
+- Không tự nhận mình là con người.
+- Nếu người dùng hỏi những thông tin đã được bot ghi nhớ thì ưu tiên thông tin đó.
+- Không bịa thông tin.
+`
           },
 
           {
             role: "user",
-
-            content:
-              String(text)
+            content: String(text)
           }
 
         ],
@@ -282,25 +334,23 @@ async function askGroq(text) {
         temperature: 0.7,
 
         max_tokens: 1024
+
       })
     }
   );
 
-  const data =
-    await response.json();
+  const data = await response.json();
+
+  console.log(
+    "🤖 GROQ STATUS:",
+    response.status
+  );
 
   if (!response.ok) {
 
     console.error(
-      "❌ GROQ CHAT ERROR:"
-    );
-
-    console.error(
-      JSON.stringify(
-        data,
-        null,
-        2
-      )
+      "❌ GROQ DETAIL:",
+      JSON.stringify(data, null, 2)
     );
 
     throw new Error(
@@ -322,24 +372,21 @@ async function askGroq(text) {
 }
 
 
-// =====================================================
-// ZALO - GỬI TIN NHẮN
-// =====================================================
+// ============================================================
+// SEND ZALO MESSAGE
+// ============================================================
 
-async function sendZaloMessage(
-  userId,
-  text
-) {
+async function sendZaloMessage(userId, text) {
 
   if (!ZALO_BOT_TOKEN) {
     throw new Error(
-      "ZALO_BOT_TOKEN chưa cấu hình"
+      "ZALO_BOT_TOKEN chưa được cấu hình"
     );
   }
 
   if (!userId) {
     throw new Error(
-      "Không có user_id"
+      "Không tìm thấy user_id"
     );
   }
 
@@ -349,10 +396,7 @@ async function sendZaloMessage(
       method: "POST",
 
       headers: {
-
-        "Content-Type":
-          "application/json",
-
+        "Content-Type": "application/json",
         "access_token":
           ZALO_BOT_TOKEN
       },
@@ -360,33 +404,24 @@ async function sendZaloMessage(
       body: JSON.stringify({
 
         recipient: {
-
-          user_id:
-            String(userId)
-
+          user_id: String(userId)
         },
 
         message: {
-
-          text:
-            String(text)
-
+          text: String(text)
         }
 
       })
     }
   );
 
-  const data =
-    await response.json();
+  const data = await response.json();
 
   console.log(
     "📤 ZALO RESPONSE:",
     JSON.stringify(data)
   );
 
-  // Zalo có thể trả HTTP 200
-  // nhưng bên trong error != 0
   if (
     !response.ok ||
     data?.error !== 0
@@ -403,241 +438,229 @@ async function sendZaloMessage(
 }
 
 
-// =====================================================
-// PARSE ZALO USER ID
-// =====================================================
+// ============================================================
+// HELP
+// ============================================================
 
-function getUserId(body) {
+function getHelpMessage() {
 
-  return (
+  return `
+🤖 ${BOT_NAME}
 
-    body?.message?.from?.id ||
+📌 LỆNH:
 
-    body?.sender?.id ||
+/help
+→ Xem danh sách lệnh.
 
-    body?.user_id ||
+/ping
+→ Kiểm tra bot.
 
-    body?.message?.chat?.id ||
+/id
+→ Xem User ID của bạn.
 
-    null
+/ai
+→ Kiểm tra AI.
 
-  );
+/zalo
+→ Kiểm tra Zalo.
+
+/status
+→ Kiểm tra toàn bộ hệ thống.
+
+/admin
+→ Kiểm tra admin.
+
+/memory
+→ Xem trạng thái bộ nhớ.
+
+💬 Hoặc cứ nhắn tin bình thường.
+Bot sẽ tự trả lời bằng AI.
+
+🧠 Bot cũng có một số câu ghi nhớ đặc biệt.
+`.trim();
 }
 
 
-// =====================================================
-// PARSE TEXT
-// =====================================================
+// ============================================================
+// STATUS
+// ============================================================
 
-function getMessageText(body) {
+async function getStatus() {
 
-  return (
+  const groq = await checkGroqKey();
+  const zalo = await checkZaloToken();
 
-    body?.message?.text ||
-
-    body?.message?.message?.text ||
-
-    body?.text ||
-
-    ""
-
-  );
+  return {
+    groq,
+    zalo
+  };
 }
 
 
-// =====================================================
-// CHECK BOT MESSAGE
-// =====================================================
+// ============================================================
+// COMMANDS
+// ============================================================
 
-function isBotMessage(body) {
+COMMANDS["/help"] = async ({ userId }) => {
 
-  return (
-    body?.message?.from?.is_bot === true
+  await sendZaloMessage(
+    userId,
+    getHelpMessage()
   );
-}
+};
 
 
-// =====================================================
-// COMMAND HANDLER
-// =====================================================
+COMMANDS["/ping"] = async ({ userId }) => {
 
-async function handleCommand(
-  userId,
-  text
-) {
-
-  const command =
-    String(text)
-      .trim()
-      .toLowerCase();
+  await sendZaloMessage(
+    userId,
+    "🏓 Pong!\n🟢 Bot đang hoạt động."
+  );
+};
 
 
-  // /ping
-  if (command === "/ping") {
+COMMANDS["/id"] = async ({ userId }) => {
 
-    await sendZaloMessage(
-      userId,
-      "🏓 Pong!\nBot đang hoạt động."
-    );
-
-    return true;
-  }
+  await sendZaloMessage(
+    userId,
+    `🆔 User ID:\n${userId}`
+  );
+};
 
 
-  // /id
-  if (command === "/id") {
+COMMANDS["/ai"] = async ({ userId }) => {
+
+  const result =
+    await checkGroqKey();
+
+  if (result.ok) {
 
     await sendZaloMessage(
       userId,
-      `🆔 User ID:\n${userId}`
+      `🤖 AI OK\n\nModel: ${AI_MODEL}\n🔑 Groq API Key: hợp lệ`
     );
 
-    return true;
-  }
-
-
-  // /on
-  if (command === "/on") {
+  } else {
 
     await sendZaloMessage(
       userId,
-      "🟢 Bot AI đang hoạt động."
+      `❌ AI ERROR\n\n${result.message}`
     );
-
-    return true;
   }
+};
 
 
-  // /off
-  if (command === "/off") {
+COMMANDS["/zalo"] = async ({ userId }) => {
+
+  const result =
+    await checkZaloToken();
+
+  if (result.ok) {
+
+    const name =
+      result.oa?.name ||
+      "OA";
 
     await sendZaloMessage(
       userId,
-      "🔴 Lệnh tắt bot hiện chưa được bật trong bản này."
+      `🟢 Zalo OK\n\nOA: ${name}\n🔑 Access Token: hợp lệ`
     );
 
-    return true;
-  }
-
-
-  // /model
-  if (command === "/model") {
+  } else {
 
     await sendZaloMessage(
       userId,
-      `🤖 Model đang dùng:\n${ACTIVE_MODEL}`
+      `❌ ZALO ERROR\n\n${result.message}`
     );
-
-    return true;
   }
+};
 
 
-  // /status
-  if (command === "/status") {
+COMMANDS["/status"] = async ({ userId }) => {
 
-    const zalo =
-      ZALO_BOT_TOKEN
-        ? "✅ Có token"
-        : "❌ Thiếu token";
+  const result =
+    await getStatus();
 
-    const groq =
-      GROQ_STATUS.ok
-        ? "✅ Hoạt động"
-        : "❌ Lỗi";
+  const groqStatus =
+    result.groq.ok
+      ? "🟢 OK"
+      : "🔴 LỖI";
 
-    await sendZaloMessage(
-      userId,
+  const zaloStatus =
+    result.zalo.ok
+      ? "🟢 OK"
+      : "🔴 LỖI";
 
-      `🤖 BOT STATUS
+  await sendZaloMessage(
+    userId,
+    `
+📊 BOT STATUS
 
-Zalo: ${zalo}
-Groq: ${groq}
-AI: ${ACTIVE_MODEL}`
-    );
+🤖 Groq: ${groqStatus}
+${result.groq.ok
+  ? `Model: ${AI_MODEL}`
+  : result.groq.message}
 
-    return true;
-  }
+💬 Zalo: ${zaloStatus}
+${result.zalo.ok
+  ? `OA: ${result.zalo.oa?.name || "OK"}`
+  : result.zalo.message}
+`.trim()
+  );
+};
 
 
-  // /admin
+COMMANDS["/memory"] = async ({ userId }) => {
+
+  await sendZaloMessage(
+    userId,
+    `🧠 Memory đang hoạt động.\n\n📚 Số rule: ${MEMORY_RULES.length}`
+  );
+};
+
+
+COMMANDS["/admin"] = async ({ userId }) => {
+
   if (
-    command === "/admin" ||
-    command === "/adminid"
+    ADMIN_ID &&
+    String(userId) !== String(ADMIN_ID)
   ) {
 
-    if (
-      ADMIN_ID &&
-      userId !== ADMIN_ID
-    ) {
-
-      await sendZaloMessage(
-        userId,
-        "⛔ Bạn không phải admin."
-      );
-
-      return true;
-    }
-
     await sendZaloMessage(
       userId,
-      `👑 ADMIN ID:\n${userId}`
-    );
-
-    return true;
-  }
-
-
-  return false;
-}
-
-
-// =====================================================
-// XỬ LÝ WEBHOOK CHUNG
-// =====================================================
-
-async function processWebhook(
-  body
-) {
-
-  console.log("");
-  console.log(
-    "================================"
-  );
-
-  console.log(
-    "📩 ZALO WEBHOOK"
-  );
-
-  console.log(
-    JSON.stringify(
-      body,
-      null,
-      2
-    )
-  );
-
-
-  // ---------------------------------------------------
-  // Bỏ qua tin bot
-  // ---------------------------------------------------
-
-  if (isBotMessage(body)) {
-
-    console.log(
-      "🤖 Tin từ bot -> bỏ qua"
+      "⛔ Bạn không phải admin."
     );
 
     return;
   }
 
+  await sendZaloMessage(
+    userId,
+    `👑 Admin ID:\n${userId}`
+  );
+};
 
-  // ---------------------------------------------------
-  // Lấy text
-  // ---------------------------------------------------
+
+// ============================================================
+// PROCESS MESSAGE
+// ============================================================
+
+async function processMessage(body) {
+
+  console.log("================================");
+  console.log("📩 ZALO WEBHOOK");
+  console.log(
+    JSON.stringify(body, null, 2)
+  );
 
   const text =
-    getMessageText(body);
+    getMessageText(body).trim();
 
+  const userId =
+    getUserId(body);
+
+  console.log("🆔 USER ID:", userId);
+  console.log("💬 TEXT:", text);
 
   if (!text) {
 
@@ -648,73 +671,102 @@ async function processWebhook(
     return;
   }
 
-
-  // ---------------------------------------------------
-  // Lấy user
-  // ---------------------------------------------------
-
-  const userId =
-    getUserId(body);
-
-
-  console.log(
-    "🆔 USER ID:",
-    userId
-  );
-
-  console.log(
-    "💬 TEXT:",
-    text
-  );
-
-
   if (!userId) {
 
-    console.error(
+    console.log(
       "❌ Không tìm thấy user ID"
     );
 
     return;
   }
 
+  // Tin nhắn do bot gửi
+  if (
+    body?.message?.from?.is_bot === true
+  ) {
 
-  // ---------------------------------------------------
-  // COMMAND
-  // ---------------------------------------------------
-
-  const handled =
-    await handleCommand(
-      userId,
-      text
+    console.log(
+      "🤖 Tin từ bot -> bỏ qua"
     );
 
-  if (handled) {
     return;
   }
 
 
-  // ---------------------------------------------------
-  // CHECK GROQ
-  // ---------------------------------------------------
+  // ==========================================================
+  // COMMAND
+  // ==========================================================
+
+  const command =
+    text
+      .split(/\s+/)[0]
+      .toLowerCase();
+
+  if (COMMANDS[command]) {
+
+    console.log(
+      "⚙️ COMMAND:",
+      command
+    );
+
+    await COMMANDS[command]({
+      userId,
+      text,
+      body
+    });
+
+    return;
+  }
+
+
+  // ==========================================================
+  // MEMORY
+  // ==========================================================
+
+  const memoryAnswer =
+    checkMemory(text);
+
+  if (memoryAnswer) {
+
+    console.log(
+      "🧠 MEMORY HIT:",
+      memoryAnswer
+    );
+
+    await sendZaloMessage(
+      userId,
+      memoryAnswer
+    );
+
+    return;
+  }
+
+
+  // ==========================================================
+  // AI
+  // ==========================================================
 
   console.log(
     "🤖 Đang hỏi Groq..."
   );
 
-  let answer;
-
-
   try {
 
-    answer =
+    const answer =
       await askGroq(text);
 
     console.log(
-      "🤖 GROQ TRẢ LỜI:"
+      "🤖 GROQ:",
+      answer
+    );
+
+    await sendZaloMessage(
+      userId,
+      answer
     );
 
     console.log(
-      answer
+      "✅ Đã trả lời người dùng"
     );
 
   } catch (error) {
@@ -724,40 +776,12 @@ async function processWebhook(
       error.message
     );
 
-
-    // -------------------------------------------------
-    // Nếu model bị lỗi -> kiểm tra lại models
-    // -------------------------------------------------
-
-    if (
-      error.message
-        .toLowerCase()
-        .includes("model")
-    ) {
-
-      console.log(
-        "🔄 Model lỗi -> kiểm tra lại danh sách model..."
-      );
-
-      await checkGroq();
-
-    }
-
-
-    // -------------------------------------------------
-    // Báo người dùng
-    // -------------------------------------------------
-
+    // Cố gửi thông báo lỗi cho user
     try {
 
       await sendZaloMessage(
-
         userId,
-
-        "❌ AI đang lỗi.\n\n" +
-        `Chi tiết: ${error.message}\n\n` +
-        "Admin kiểm tra Render Logs nhé."
-
+        `❌ AI đang lỗi.\n\n${error.message}`
       );
 
     } catch (zaloError) {
@@ -766,260 +790,134 @@ async function processWebhook(
         "❌ Không gửi được lỗi về Zalo:",
         zaloError.message
       );
-
     }
-
-    return;
   }
 
+  console.log("================================");
+}
 
-  // ---------------------------------------------------
-  // GỬI TRẢ LỜI
-  // ---------------------------------------------------
+
+// ============================================================
+// WEBHOOK /webhook
+// ============================================================
+
+app.post("/webhook", async (req, res) => {
+
+  // Trả 200 ngay
+  res.status(200).json({
+    ok: true
+  });
 
   try {
 
-    await sendZaloMessage(
-      userId,
-      answer
-    );
-
-    console.log(
-      "✅ ĐÃ GỬI CÂU TRẢ LỜI"
+    await processMessage(
+      req.body
     );
 
   } catch (error) {
 
     console.error(
-      "❌ ZALO SEND ERROR:",
-      error.message
+      "❌ WEBHOOK ERROR:",
+      error
     );
+  }
+});
+
+
+// ============================================================
+// WEBHOOK /zalo/webhook
+// ============================================================
+
+app.post("/zalo/webhook", async (req, res) => {
+
+  res.status(200).json({
+    ok: true
+  });
+
+  try {
+
+    await processMessage(
+      req.body
+    );
+
+  } catch (error) {
 
     console.error(
-      "⚠️ Kiểm tra ZALO_BOT_TOKEN trên Render."
+      "❌ /zalo/webhook ERROR:",
+      error
     );
   }
+});
 
 
-  console.log(
-    "================================"
-  );
-}
-
-
-// =====================================================
+// ============================================================
 // HOME
-// =====================================================
+// ============================================================
 
-app.get(
-  "/",
-  (req, res) => {
+app.get("/", (req, res) => {
 
-    res.status(200).send(`
+  res.status(200).send(`
+<!DOCTYPE html>
+<html lang="vi">
 
-      <html>
+<head>
+<meta charset="UTF-8">
+<title>${BOT_NAME}</title>
+</head>
 
-        <head>
+<body>
 
-          <meta charset="UTF-8">
+<h2>🤖 ${BOT_NAME}</h2>
 
-          <title>
-            Zalo Groq AI Bot
-          </title>
+<p>🟢 Server đang chạy.</p>
 
-        </head>
+<p>AI Model: ${AI_MODEL}</p>
 
-        <body>
+<p>
+Webhook:
+<code>/webhook</code>
+</p>
 
-          <h2>
-            🤖 Zalo Groq AI Bot
-          </h2>
+</body>
 
-          <p>
-            🟢 Server đang chạy.
-          </p>
-
-          <p>
-            🤖 AI:
-            ${ACTIVE_MODEL}
-          </p>
-
-          <p>
-            Groq:
-            ${GROQ_STATUS.ok
-              ? "OK"
-              : "ERROR"}
-          </p>
-
-        </body>
-
-      </html>
-
-    `);
-
-  }
-);
+</html>
+`);
+});
 
 
-// =====================================================
+// ============================================================
 // HEALTH
-// =====================================================
+// ============================================================
 
-app.get(
-  "/health",
-  (req, res) => {
+app.get("/health", async (req, res) => {
 
-    res.json({
+  const result =
+    await getStatus();
 
-      ok: true,
+  res.json({
 
-      zalo:
-        !!ZALO_BOT_TOKEN,
+    ok:
+      result.groq.ok &&
+      result.zalo.ok,
 
-      groq:
-        GROQ_STATUS.ok,
+    server: true,
 
-      model:
-        ACTIVE_MODEL,
+    groq: {
+      ok: result.groq.ok,
+      model: AI_MODEL
+    },
 
-      groq_message:
-        GROQ_STATUS.message,
-
-      timestamp:
-        new Date().toISOString()
-
-    });
-
-  }
-);
-
-
-// =====================================================
-// GROQ DEBUG
-// =====================================================
-// KHÔNG trả API key.
-// Chỉ trả trạng thái.
-// =====================================================
-
-app.get(
-  "/debug/groq",
-  async (req, res) => {
-
-    const ok =
-      await checkGroq();
-
-    res.json({
-
-      ok,
-
-      model:
-        ACTIVE_MODEL,
-
-      message:
-        GROQ_STATUS.message,
-
-      model_count:
-        GROQ_STATUS.models.length,
-
-      models:
-        GROQ_STATUS.models
-
-    });
-
-  }
-);
-
-
-// =====================================================
-// WEBHOOK
-// =====================================================
-
-app.post(
-  "/webhook",
-  async (req, res) => {
-
-    // Trả 200 ngay
-    // tránh Zalo retry webhook
-
-    res.status(200).json({
-      ok: true
-    });
-
-
-    try {
-
-      await processWebhook(
-        req.body
-      );
-
-    } catch (error) {
-
-      console.error(
-        "❌ WEBHOOK ERROR:",
-        error.message
-      );
-
+    zalo: {
+      ok: result.zalo.ok
     }
 
-  }
-);
+  });
+});
 
 
-// =====================================================
-// /zalo/webhook
-// =====================================================
-
-app.post(
-  "/zalo/webhook",
-  async (req, res) => {
-
-    res.status(200).json({
-      ok: true
-    });
-
-
-    try {
-
-      await processWebhook(
-        req.body
-      );
-
-    } catch (error) {
-
-      console.error(
-        "❌ /zalo/webhook ERROR:",
-        error.message
-      );
-
-    }
-
-  }
-);
-
-
-// =====================================================
-// 404
-// =====================================================
-
-app.use(
-  (req, res) => {
-
-    res.status(404).json({
-
-      ok: false,
-
-      error:
-        "Not found"
-
-    });
-
-  }
-);
-
-
-// =====================================================
+// ============================================================
 // ERROR HANDLER
-// =====================================================
+// ============================================================
 
 app.use(
   (err, req, res, next) => {
@@ -1032,20 +930,18 @@ app.use(
     if (!res.headersSent) {
 
       res.status(500).json({
-
-        ok: false
-
+        ok: false,
+        error: "Internal Server Error"
       });
 
     }
-
   }
 );
 
 
-// =====================================================
-// START SERVER
-// =====================================================
+// ============================================================
+// START
+// ============================================================
 
 app.listen(
   PORT,
@@ -1053,17 +949,9 @@ app.listen(
   async () => {
 
     console.log("");
-    console.log(
-      "================================"
-    );
-
-    console.log(
-      "🤖 ZALO GROQ AI BOT"
-    );
-
-    console.log(
-      "================================"
-    );
+    console.log("================================");
+    console.log(`🤖 ${BOT_NAME}`);
+    console.log("================================");
 
     console.log(
       "🚀 PORT:",
@@ -1075,52 +963,77 @@ app.listen(
     );
 
     console.log(
-      "🔑 ZALO TOKEN:",
-      maskSecret(
-        ZALO_BOT_TOKEN
-      )
+      "🤖 AI MODEL:",
+      AI_MODEL
     );
 
     console.log(
       "🔑 GROQ KEY:",
-      maskSecret(
-        GROQ_API_KEY
-      )
+      maskSecret(GROQ_API_KEY)
     );
 
     console.log(
-      "🎯 REQUESTED MODEL:",
-      REQUESTED_MODEL
+      "🔑 ZALO TOKEN:",
+      maskSecret(ZALO_BOT_TOKEN)
     );
+
+    console.log("================================");
+
+    // Kiểm tra ngay khi Render khởi động
+    console.log("🔍 KIỂM TRA GROQ...");
+
+    const groq =
+      await checkGroqKey();
+
+    if (groq.ok) {
+
+      console.log(
+        "🟢 GROQ API KEY: OK"
+      );
+
+      console.log(
+        "📦 MODEL:",
+        AI_MODEL
+      );
+
+    } else {
+
+      console.error(
+        "🔴 GROQ API KEY:",
+        groq.message
+      );
+    }
+
+    console.log("================================");
 
     console.log(
-      "================================"
+      "🔍 KIỂM TRA ZALO TOKEN..."
     );
 
+    const zalo =
+      await checkZaloToken();
 
-    // -----------------------------------------------
-    // TEST GROQ NGAY KHI SERVER START
-    // -----------------------------------------------
+    if (zalo.ok) {
 
-    await checkGroq();
+      console.log(
+        "🟢 ZALO TOKEN: OK"
+      );
 
+      console.log(
+        "🏢 OA:",
+        zalo.oa?.name || "Unknown"
+      );
 
-    console.log(
-      "================================"
-    );
+    } else {
 
-    console.log(
-      "🤖 ACTIVE MODEL:",
-      ACTIVE_MODEL
-    );
+      console.error(
+        "🔴 ZALO TOKEN:",
+        zalo.message
+      );
+    }
 
-    console.log(
-      "🟢 BOT SERVER: READY"
-    );
-
-    console.log(
-      "================================"
-    );
-
+    console.log("================================");
+    console.log("🟢 BOT READY");
+    console.log("================================");
   }
 );
