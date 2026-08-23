@@ -1,7 +1,6 @@
 const express = require("express");
 
 const app = express();
-
 app.use(express.json({ limit: "2mb" }));
 
 // ============================================================
@@ -19,32 +18,50 @@ const GEMINI_API_KEY =
 const ADMIN_ID =
   (process.env.ADMIN_ID || "").trim();
 
+// Có thể để trống.
+// Code sẽ tự tìm model Gemini Flash phù hợp.
 const AI_MODEL =
-  (process.env.AI_MODEL || "gemini-2.5-flash").trim();
+  (process.env.AI_MODEL || "").trim();
 
 const BOT_NAME =
-  process.env.BOT_NAME || "Bot Mặt Đất Màu Xanh";
+  process.env.BOT_NAME ||
+  "Bot Mặt Đất Màu Xanh";
 
 
 // ============================================================
-// BOT STATUS
+// BOT STATE
 // ============================================================
 
 let botEnabled = true;
 
 
 // ============================================================
-// MEMORY RULES
+// GEMINI MODEL FALLBACK
+// ============================================================
+
+const GEMINI_MODEL_FALLBACKS = [
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+];
+
+let activeGeminiModel = null;
+
+
+// ============================================================
+// MEMORY
 // ============================================================
 //
-// Muốn thêm câu ghi nhớ sau này:
+// Muốn thêm câu ghi nhớ:
 //
 // {
 //   patterns: [
-//     "câu muốn nhận diện",
-//     "câu tương đồng"
+//     "câu 1",
+//     "câu 2"
 //   ],
-//   answer: "câu bot phải trả lời"
+//   answer: "câu trả lời"
 // }
 //
 // ============================================================
@@ -76,14 +93,6 @@ const MEMORY_RULES = [
 // ============================================================
 // COMMAND SYSTEM
 // ============================================================
-//
-// Sau này thêm lệnh chỉ cần thêm:
-//
-// COMMANDS["/tenlenh"] = async ({ userId, text }) => {
-//   await sendZaloMessage(userId, "Nội dung");
-// };
-//
-// ============================================================
 
 const COMMANDS = {};
 
@@ -107,7 +116,7 @@ function normalizeText(text) {
 
 
 // ============================================================
-// CHECK MEMORY
+// MEMORY CHECK
 // ============================================================
 
 function checkMemory(text) {
@@ -119,13 +128,13 @@ function checkMemory(text) {
 
     for (const pattern of rule.patterns) {
 
-      const normalizedPattern =
+      const p =
         normalizeText(pattern);
 
       if (
-        normalized === normalizedPattern ||
-        normalized.includes(normalizedPattern) ||
-        normalizedPattern.includes(normalized)
+        normalized === p ||
+        normalized.includes(p) ||
+        p.includes(normalized)
       ) {
 
         return rule.answer;
@@ -141,7 +150,7 @@ function checkMemory(text) {
 
 
 // ============================================================
-// GET USER ID
+// GET ZALO USER ID
 // ============================================================
 
 function getUserId(body) {
@@ -159,7 +168,7 @@ function getUserId(body) {
 
 
 // ============================================================
-// GET MESSAGE TEXT
+// GET TEXT
 // ============================================================
 
 function getMessageText(body) {
@@ -198,17 +207,22 @@ function maskSecret(value) {
 
 
 // ============================================================
-// SPLIT LONG MESSAGE
+// SPLIT ZALO MESSAGE
 // ============================================================
 
-function splitMessage(text, maxLength = 1800) {
+function splitMessage(
+  text,
+  maxLength = 1800
+) {
 
   const result = [];
 
   let remaining =
     String(text || "").trim();
 
-  while (remaining.length > maxLength) {
+  while (
+    remaining.length > maxLength
+  ) {
 
     let cut =
       remaining.lastIndexOf(
@@ -216,7 +230,9 @@ function splitMessage(text, maxLength = 1800) {
         maxLength
       );
 
-    if (cut < maxLength * 0.5) {
+    if (
+      cut < maxLength * 0.5
+    ) {
 
       cut =
         remaining.lastIndexOf(
@@ -226,8 +242,12 @@ function splitMessage(text, maxLength = 1800) {
 
     }
 
-    if (cut < maxLength * 0.5) {
+    if (
+      cut < maxLength * 0.5
+    ) {
+
       cut = maxLength;
+
     }
 
     result.push(
@@ -252,24 +272,21 @@ function splitMessage(text, maxLength = 1800) {
 
 
 // ============================================================
-// GEMINI API CHECK
+// GEMINI LIST MODELS
 // ============================================================
 
-async function checkGeminiKey() {
+async function listGeminiModels() {
 
   if (!GEMINI_API_KEY) {
 
-    return {
-      ok: false,
-      message:
-        "GEMINI_API_KEY chưa được cấu hình"
-    };
+    throw new Error(
+      "GEMINI_API_KEY chưa được cấu hình"
+    );
 
   }
 
-  try {
-
-    const response = await fetch(
+  const response =
+    await fetch(
       "https://generativelanguage.googleapis.com/v1beta/models",
       {
         method: "GET",
@@ -281,53 +298,160 @@ async function checkGeminiKey() {
       }
     );
 
-    const data =
-      await response.json();
+  const data =
+    await response.json();
 
-    if (!response.ok) {
+  if (!response.ok) {
 
-      return {
-        ok: false,
+    console.error(
+      "❌ GEMINI LIST MODELS:",
+      JSON.stringify(
+        data,
+        null,
+        2
+      )
+    );
 
-        message:
-          data?.error?.message ||
-          `Gemini HTTP ${response.status}`
-      };
+    throw new Error(
+      data?.error?.message ||
+      `Gemini HTTP ${response.status}`
+    );
+
+  }
+
+  return data?.models || [];
+}
+
+
+// ============================================================
+// CHOOSE GEMINI MODEL
+// ============================================================
+
+async function resolveGeminiModel() {
+
+  if (activeGeminiModel) {
+    return activeGeminiModel;
+  }
+
+  const models =
+    await listGeminiModels();
+
+  const usableModels =
+    models.filter(model => {
+
+      const methods =
+        model?.supportedGenerationMethods ||
+        [];
+
+      return methods.includes(
+        "generateContent"
+      );
+
+    });
+
+
+  console.log(
+    "📚 Gemini models có generateContent:"
+  );
+
+  for (
+    const model of usableModels
+  ) {
+
+    console.log(
+      "   -",
+      model?.name
+    );
+
+  }
+
+
+  // ----------------------------------------------------------
+  // 1. Nếu AI_MODEL được cấu hình và tồn tại
+  // ----------------------------------------------------------
+
+  if (AI_MODEL) {
+
+    const wanted =
+      `models/${AI_MODEL}`;
+
+    const found =
+      usableModels.find(
+        model =>
+          model?.name === wanted
+      );
+
+    if (found) {
+
+      activeGeminiModel =
+        AI_MODEL;
+
+      console.log(
+        "🧠 MODEL ĐƯỢC CHỌN:",
+        activeGeminiModel
+      );
+
+      return activeGeminiModel;
 
     }
 
-    const models =
-      data?.models || [];
+    console.log(
+      `⚠️ AI_MODEL "${AI_MODEL}" không khả dụng.`
+    );
 
-    const wantedModel =
-      `models/${AI_MODEL}`;
-
-    const exists =
-      models.some(
-        model =>
-          model?.name === wantedModel
-      );
-
-    return {
-      ok: true,
-      modelExists: exists,
-      models
-    };
-
-  } catch (error) {
-
-    return {
-      ok: false,
-      message: error.message
-    };
+    console.log(
+      "🔄 Đang tự chọn model khác..."
+    );
 
   }
+
+
+  // ----------------------------------------------------------
+  // 2. Tự chọn model fallback
+  // ----------------------------------------------------------
+
+  for (
+    const candidate
+    of GEMINI_MODEL_FALLBACKS
+  ) {
+
+    const found =
+      usableModels.find(
+        model =>
+          model?.name ===
+          `models/${candidate}`
+      );
+
+    if (found) {
+
+      activeGeminiModel =
+        candidate;
+
+      console.log(
+        "🟢 AUTO MODEL:",
+        activeGeminiModel
+      );
+
+      return activeGeminiModel;
+
+    }
+
+  }
+
+
+  // ----------------------------------------------------------
+  // 3. Không tìm được
+  // ----------------------------------------------------------
+
+  throw new Error(
+    "API key Gemini không có model generateContent phù hợp."
+  );
 
 }
 
 
 // ============================================================
-// ASK GEMINI
+// GEMINI ASK
 // ============================================================
 
 async function askGemini(text) {
@@ -340,87 +464,99 @@ async function askGemini(text) {
 
   }
 
-  const response = await fetch(
+  const model =
+    await resolveGeminiModel();
 
-    `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent`,
 
-    {
-      method: "POST",
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
-      headers: {
-        "Content-Type":
-          "application/json",
 
-        "x-goog-api-key":
-          GEMINI_API_KEY
-      },
+  const body = {
 
-      body: JSON.stringify({
+    // ĐÚNG FIELD GEMINI REST API
+    systemInstruction: {
 
-        system_instruction: {
+      parts: [
 
-          parts: [
-
-            {
-              text:
-                `Bạn là trợ lý AI của ${BOT_NAME}.
+        {
+          text:
+`Bạn là trợ lý AI của ${BOT_NAME}.
 
 Hãy trả lời bằng tiếng Việt.
 Nói chuyện tự nhiên, thân thiện.
-Trả lời đúng trọng tâm.
-Không tự nhận mình là con người.
-Nếu người dùng hỏi thông tin mà bạn không biết thì nói rõ là không biết.
-`
-            }
+Trả lời ngắn gọn khi câu hỏi đơn giản.
+Nếu người dùng hỏi chuyện bình thường thì trả lời như một người bạn.
+Không tự bịa thông tin.
+Nếu không biết thì nói rõ là không biết.
 
-          ]
+Bot có thể được mở rộng thêm các lệnh Free Fire và các chức năng khác trong tương lai.`
+        }
+
+      ]
+
+    },
+
+    contents: [
+
+      {
+
+        role: "user",
+
+        parts: [
+
+          {
+            text:
+              String(text)
+          }
+
+        ]
+
+      }
+
+    ]
+
+  };
+
+
+  const response =
+    await fetch(
+      url,
+      {
+
+        method: "POST",
+
+        headers: {
+
+          "Content-Type":
+            "application/json",
+
+          "x-goog-api-key":
+            GEMINI_API_KEY
 
         },
 
-        contents: [
+        body:
+          JSON.stringify(body)
 
-          {
+      }
+    );
 
-            role: "user",
-
-            parts: [
-
-              {
-                text: String(text)
-              }
-
-            ]
-
-          }
-
-        ],
-
-        generationConfig: {
-
-          temperature: 0.7,
-
-          maxOutputTokens: 1024
-
-        }
-
-      })
-
-    }
-
-  );
 
   const data =
     await response.json();
+
 
   console.log(
     "🤖 GEMINI HTTP:",
     response.status
   );
 
+
   if (!response.ok) {
 
     console.error(
-      "❌ GEMINI ERROR:",
+      "❌ GEMINI DETAIL:",
       JSON.stringify(
         data,
         null,
@@ -437,22 +573,36 @@ Nếu người dùng hỏi thông tin mà bạn không biết thì nói rõ là 
 
   }
 
+
   const answer =
     data
       ?.candidates?.[0]
-      ?.content
-      ?.parts
-      ?.map(part => part?.text || "")
+      ?.content?.parts
+      ?.map(
+        part =>
+          part?.text || ""
+      )
       .join("")
       .trim();
 
+
   if (!answer) {
 
+    console.error(
+      "❌ GEMINI RESPONSE:",
+      JSON.stringify(
+        data,
+        null,
+        2
+      )
+    );
+
     throw new Error(
-      "Gemini không trả về nội dung"
+      "Gemini không trả về nội dung."
     );
 
   }
+
 
   return answer;
 
@@ -460,7 +610,7 @@ Nếu người dùng hỏi thông tin mà bạn không biết thì nói rõ là 
 
 
 // ============================================================
-// SEND ZALO MESSAGE
+// SEND ZALO
 // ============================================================
 
 async function sendZaloMessage(
@@ -484,10 +634,15 @@ async function sendZaloMessage(
 
   }
 
+
   const chunks =
     splitMessage(text);
 
-  for (const chunk of chunks) {
+
+  for (
+    const chunk
+    of chunks
+  ) {
 
     const response =
       await fetch(
@@ -506,34 +661,38 @@ async function sendZaloMessage(
 
           },
 
-          body: JSON.stringify({
+          body:
+            JSON.stringify({
 
-            recipient: {
+              recipient: {
 
-              user_id:
-                String(userId)
+                user_id:
+                  String(userId)
 
-            },
+              },
 
-            message: {
+              message: {
 
-              text:
-                String(chunk)
+                text:
+                  String(chunk)
 
-            }
+              }
 
-          })
+            })
 
         }
       );
 
+
     const data =
       await response.json();
+
 
     console.log(
       "📤 ZALO RESPONSE:",
       JSON.stringify(data)
     );
+
 
     if (
       !response.ok ||
@@ -564,7 +723,7 @@ function getHelp() {
   return `
 🤖 ${BOT_NAME}
 
-📌 LỆNH:
+📌 LỆNH
 
 /help
 → Xem danh sách lệnh.
@@ -585,31 +744,39 @@ function getHelp() {
 → Kiểm tra Gemini.
 
 /status
-→ Kiểm tra hệ thống.
-
-/admin
-→ Kiểm tra Admin ID.
+→ Xem trạng thái.
 
 /memory
-→ Kiểm tra bộ nhớ.
+→ Xem bộ nhớ.
 
-💬 Ngoài các lệnh trên:
-Bạn cứ nhắn bất kỳ câu gì,
-bot sẽ dùng Gemini để trả lời.
+/admin
+→ Xem Admin ID.
 
-🟢 Trạng thái:
-${botEnabled ? "BOT ĐANG BẬT" : "BOT ĐANG TẮT"}
+💬 NHẮN BẤT KỲ
+→ Bot sẽ trả lời bằng Gemini.
+
+🧠 GHI NHỚ
+Hỏi:
+"Ai tạo ra bot mặt đất màu xanh?"
+
+Bot:
+"An Na & Hoàng Vũ"
+
+🚀 Sau này có thể thêm lệnh FF,
+game và các chức năng khác.
 `.trim();
 
 }
 
 
 // ============================================================
-// COMMANDS
+// COMMAND: HELP
 // ============================================================
 
 COMMANDS["/help"] =
-async ({ userId }) => {
+async ({
+  userId
+}) => {
 
   await sendZaloMessage(
     userId,
@@ -619,8 +786,14 @@ async ({ userId }) => {
 };
 
 
+// ============================================================
+// COMMAND: ON
+// ============================================================
+
 COMMANDS["/on"] =
-async ({ userId }) => {
+async ({
+  userId
+}) => {
 
   botEnabled = true;
 
@@ -632,8 +805,14 @@ async ({ userId }) => {
 };
 
 
+// ============================================================
+// COMMAND: OFF
+// ============================================================
+
 COMMANDS["/off"] =
-async ({ userId }) => {
+async ({
+  userId
+}) => {
 
   botEnabled = false;
 
@@ -645,8 +824,14 @@ async ({ userId }) => {
 };
 
 
+// ============================================================
+// COMMAND: PING
+// ============================================================
+
 COMMANDS["/ping"] =
-async ({ userId }) => {
+async ({
+  userId
+}) => {
 
   await sendZaloMessage(
     userId,
@@ -656,58 +841,104 @@ async ({ userId }) => {
 };
 
 
+// ============================================================
+// COMMAND: ID
+// ============================================================
+
 COMMANDS["/id"] =
-async ({ userId }) => {
+async ({
+  userId
+}) => {
 
   await sendZaloMessage(
     userId,
-    `🆔 User ID của bạn:\n${userId}`
+    `🆔 User ID:\n${userId}`
   );
 
 };
 
 
+// ============================================================
+// COMMAND: AI
+// ============================================================
+
 COMMANDS["/ai"] =
-async ({ userId }) => {
+async ({
+  userId
+}) => {
 
-  const result =
-    await checkGeminiKey();
+  try {
 
-  if (!result.ok) {
+    const model =
+      await resolveGeminiModel();
 
     await sendZaloMessage(
+
+      userId,
+
+      `🟢 GEMINI OK
+
+Model:
+${model}
+
+API Key:
+Hợp lệ`
+
+    );
+
+  } catch (error) {
+
+    await sendZaloMessage(
+
       userId,
 
       `🔴 GEMINI LỖI
 
-${result.message}`
+${error.message}`
+
     );
 
-    return;
   }
-
-  await sendZaloMessage(
-    userId,
-
-    `🟢 GEMINI OK
-
-Model:
-${AI_MODEL}
-
-API Key:
-Hợp lệ`
-  );
 
 };
 
 
-COMMANDS["/status"] =
-async ({ userId }) => {
+// ============================================================
+// COMMAND: STATUS
+// ============================================================
 
-  const gemini =
-    await checkGeminiKey();
+COMMANDS["/status"] =
+async ({
+  userId
+}) => {
+
+  let geminiStatus =
+    "🔴 Lỗi";
+
+  let model =
+    activeGeminiModel ||
+    "Chưa kiểm tra";
+
+
+  try {
+
+    model =
+      await resolveGeminiModel();
+
+    geminiStatus =
+      "🟢 OK";
+
+  } catch (error) {
+
+    geminiStatus =
+      "🔴 " +
+      error.message;
+
+  }
+
 
   await sendZaloMessage(
+
     userId,
 
     `
@@ -717,42 +948,66 @@ async ({ userId }) => {
 🟢 Online
 
 🤖 AI:
-${gemini.ok ? "🟢 OK" : "🔴 LỖI"}
+Google Gemini
 
 🧠 Model:
-${AI_MODEL}
+${model}
 
 🔑 Gemini:
-${gemini.ok ? "🟢 Hợp lệ" : "🔴 " + gemini.message}
+${geminiStatus}
 
-💬 Zalo:
-${ZALO_BOT_TOKEN ? "🟢 Đã cấu hình" : "🔴 Thiếu token"}
+💬 Zalo Token:
+${ZALO_BOT_TOKEN
+  ? "🟢 Có"
+  : "🔴 Thiếu"}
 
 🤖 Bot:
-${botEnabled ? "🟢 ON" : "🔴 OFF"}
+${botEnabled
+  ? "🟢 ON"
+  : "🔴 OFF"}
 `.trim()
+
   );
 
 };
 
+
+// ============================================================
+// COMMAND: MEMORY
+// ============================================================
 
 COMMANDS["/memory"] =
-async ({ userId }) => {
+async ({
+  userId
+}) => {
 
   await sendZaloMessage(
+
     userId,
 
-    `🧠 Bộ nhớ đang hoạt động.
+    `🧠 MEMORY
 
-📚 Số câu ghi nhớ:
-${MEMORY_RULES.length}`
+Số nhóm ghi nhớ:
+${MEMORY_RULES.length}
+
+Ví dụ:
+"Ai tạo ra bot mặt đất màu xanh?"
+
+→ An Na & Hoàng Vũ`
+
   );
 
 };
 
 
+// ============================================================
+// COMMAND: ADMIN
+// ============================================================
+
 COMMANDS["/admin"] =
-async ({ userId }) => {
+async ({
+  userId
+}) => {
 
   if (
     ADMIN_ID &&
@@ -768,46 +1023,46 @@ async ({ userId }) => {
     return;
   }
 
+
   await sendZaloMessage(
+
     userId,
 
     `👑 ADMIN ID:
 
 ${ADMIN_ID || userId}`
+
   );
 
 };
 
 
 // ============================================================
-// PROCESS ZALO MESSAGE
+// PROCESS MESSAGE
 // ============================================================
 
-async function processMessage(body) {
+async function processMessage(
+  body
+) {
 
   console.log("");
   console.log(
-    "================================"
+    "========================================"
   );
 
   console.log(
     "📩 ZALO EVENT"
   );
 
-  console.log(
-    JSON.stringify(
-      body,
-      null,
-      2
-    )
-  );
 
   const text =
     getMessageText(body)
       .trim();
 
+
   const userId =
     getUserId(body);
+
 
   console.log(
     "🆔 USER ID:",
@@ -819,17 +1074,26 @@ async function processMessage(body) {
     text
   );
 
+
+  // ----------------------------------------------------------
   // Không có text
+  // ----------------------------------------------------------
+
   if (!text) {
 
     console.log(
-      "⚠️ Không có text."
+      "⚠️ Không có text -> bỏ qua."
     );
 
     return;
+
   }
 
+
+  // ----------------------------------------------------------
   // Không có user
+  // ----------------------------------------------------------
+
   if (!userId) {
 
     console.log(
@@ -837,9 +1101,14 @@ async function processMessage(body) {
     );
 
     return;
+
   }
 
+
+  // ----------------------------------------------------------
   // Tin từ bot
+  // ----------------------------------------------------------
+
   if (
     body?.message?.from?.is_bot === true
   ) {
@@ -849,31 +1118,38 @@ async function processMessage(body) {
     );
 
     return;
+
   }
 
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // COMMAND
-  // ==========================================================
+  // ----------------------------------------------------------
 
-  const command =
+  const firstWord =
     text
       .split(/\s+/)[0]
       .toLowerCase();
 
-  if (COMMANDS[command]) {
+
+  if (
+    COMMANDS[firstWord]
+  ) {
 
     console.log(
       "⚙️ COMMAND:",
-      command
+      firstWord
     );
+
 
     try {
 
-      await COMMANDS[command]({
+      await COMMANDS[firstWord]({
+
         userId,
         text,
         body
+
       });
 
     } catch (error) {
@@ -883,96 +1159,118 @@ async function processMessage(body) {
         error.message
       );
 
+      try {
+
+        await sendZaloMessage(
+
+          userId,
+
+          `❌ Lỗi lệnh:
+
+${error.message}`
+
+        );
+
+      } catch (_) {}
+
     }
 
+
     return;
+
   }
 
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // BOT OFF
-  // ==========================================================
+  // ----------------------------------------------------------
 
   if (!botEnabled) {
 
     console.log(
-      "🔴 Bot đang OFF."
+      "🔴 Bot OFF -> bỏ qua tin nhắn."
     );
 
     return;
+
   }
 
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // MEMORY
-  // ==========================================================
+  // ----------------------------------------------------------
 
   const memoryAnswer =
     checkMemory(text);
 
+
   if (memoryAnswer) {
 
     console.log(
-      "🧠 MEMORY HIT"
-    );
-
-    console.log(
-      "↳",
+      "🧠 MEMORY HIT:",
       memoryAnswer
     );
+
 
     try {
 
       await sendZaloMessage(
+
         userId,
+
         memoryAnswer
+
       );
 
     } catch (error) {
 
       console.error(
-        "❌ MEMORY SEND ERROR:",
+        "❌ MEMORY SEND:",
         error.message
       );
 
     }
 
+
     return;
+
   }
 
 
-  // ==========================================================
+  // ----------------------------------------------------------
   // GEMINI
-  // ==========================================================
+  // ----------------------------------------------------------
 
   console.log(
     "🤖 Đang hỏi Gemini..."
   );
+
 
   try {
 
     const answer =
       await askGemini(text);
 
+
     console.log(
       "🤖 GEMINI TRẢ LỜI:"
     );
 
-    console.log(answer);
+    console.log(
+      answer
+    );
 
-
-    // ========================================================
-    // SEND TO ZALO
-    // ========================================================
 
     await sendZaloMessage(
       userId,
       answer
     );
 
+
     console.log(
-      "✅ Đã gửi trả lời."
+      "✅ Đã trả lời Zalo."
     );
+
 
   } catch (error) {
 
@@ -981,22 +1279,23 @@ async function processMessage(body) {
       error.message
     );
 
+
     try {
 
       await sendZaloMessage(
+
         userId,
 
-        `❌ Gemini đang lỗi.
+        `❌ Gemini gặp lỗi.
 
-${error.message}
+${error.message}`
 
-Kiểm tra lại GEMINI_API_KEY trên Render.`
       );
 
     } catch (zaloError) {
 
       console.error(
-        "❌ ZALO ERROR:",
+        "❌ KHÔNG GỬI ĐƯỢC ZALO:",
         zaloError.message
       );
 
@@ -1004,25 +1303,30 @@ Kiểm tra lại GEMINI_API_KEY trên Render.`
 
   }
 
+
   console.log(
-    "================================"
+    "========================================"
   );
 
 }
 
 
 // ============================================================
-// WEBHOOK
+// WEBHOOK /webhook
 // ============================================================
 
 app.post(
   "/webhook",
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
 
-    // Trả 200 ngay
+    // Trả 200 NGAY cho Zalo
     res.status(200).json({
       ok: true
     });
+
 
     try {
 
@@ -1044,16 +1348,20 @@ app.post(
 
 
 // ============================================================
-// SECOND WEBHOOK
+// WEBHOOK /zalo/webhook
 // ============================================================
 
 app.post(
   "/zalo/webhook",
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
 
     res.status(200).json({
       ok: true
     });
+
 
     try {
 
@@ -1080,7 +1388,10 @@ app.post(
 
 app.get(
   "/",
-  (req, res) => {
+  (
+    req,
+    res
+  ) => {
 
     res.status(200).send(`
 
@@ -1092,6 +1403,9 @@ app.get(
 
 <meta charset="UTF-8">
 
+<meta name="viewport"
+content="width=device-width, initial-scale=1">
+
 <title>${BOT_NAME}</title>
 
 </head>
@@ -1102,18 +1416,15 @@ app.get(
 
 <p>🟢 Server đang chạy.</p>
 
-<p>
-AI:
-<b>Gemini</b>
+<p>AI: Google Gemini</p>
+
+<p>Model:
+<b>
+${activeGeminiModel || AI_MODEL || "AUTO"}
+</b>
 </p>
 
-<p>
-Model:
-<b>${AI_MODEL}</b>
-</p>
-
-<p>
-Webhook:
+<p>Webhook:
 <code>/webhook</code>
 </p>
 
@@ -1128,37 +1439,50 @@ Webhook:
 
 
 // ============================================================
-// HEALTH
+// HEALTH CHECK
 // ============================================================
 
 app.get(
   "/health",
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
 
-    const gemini =
-      await checkGeminiKey();
+    let gemini = false;
+    let model =
+      activeGeminiModel ||
+      null;
+
+    try {
+
+      model =
+        await resolveGeminiModel();
+
+      gemini = true;
+
+    } catch (_) {}
+
 
     res.json({
 
       ok:
-        gemini.ok &&
+        gemini &&
         !!ZALO_BOT_TOKEN,
 
-      server: true,
+      server:
+        true,
 
-      ai: {
-
-        provider:
-          "Google Gemini",
-
-        model:
-          AI_MODEL,
+      gemini: {
 
         configured:
           !!GEMINI_API_KEY,
 
         valid:
-          gemini.ok
+          gemini,
+
+        model:
+          model
 
       },
 
@@ -1199,6 +1523,7 @@ app.use(
       err
     );
 
+
     if (
       !res.headersSent
     ) {
@@ -1216,7 +1541,7 @@ app.use(
 
 
 // ============================================================
-// START SERVER
+// START
 // ============================================================
 
 app.listen(
@@ -1251,90 +1576,6 @@ app.listen(
     );
 
     console.log(
-      "🧠 MODEL:",
-      AI_MODEL
-    );
-
-    console.log(
       "🔑 GEMINI KEY:",
       maskSecret(
-        GEMINI_API_KEY
-      )
-    );
-
-    console.log(
-      "🔑 ZALO TOKEN:",
-      maskSecret(
-        ZALO_BOT_TOKEN
-      )
-    );
-
-    console.log(
-      "👑 ADMIN:",
-      ADMIN_ID
-        ? "Đã cấu hình"
-        : "Chưa cấu hình"
-    );
-
-    console.log(
-      "========================================"
-    );
-
-
-    // ========================================================
-    // TEST GEMINI
-    // ========================================================
-
-    console.log(
-      "🔍 Đang kiểm tra Gemini..."
-    );
-
-    const gemini =
-      await checkGeminiKey();
-
-    if (gemini.ok) {
-
-      console.log(
-        "🟢 GEMINI API KEY: OK"
-      );
-
-      if (
-        gemini.modelExists
-      ) {
-
-        console.log(
-          `🟢 MODEL ${AI_MODEL}: OK`
-        );
-
-      } else {
-
-        console.log(
-          `⚠️ Không tìm thấy model ${AI_MODEL}`
-        );
-
-      }
-
-    } else {
-
-      console.error(
-        "🔴 GEMINI:",
-        gemini.message
-      );
-
-    }
-
-
-    console.log(
-      "========================================"
-    );
-
-    console.log(
-      "🟢 BOT READY"
-    );
-
-    console.log(
-      "========================================"
-    );
-
-  }
-);
+        GEMINI_API
