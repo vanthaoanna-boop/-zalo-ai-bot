@@ -220,10 +220,25 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    const chatId = message?.chat?.id;
-    const userId = message?.from?.id;
-    const text = message?.text;
+    const chatId =
+  message?.chat?.id ||
+  event?.chat_id ||
+  event?.conversation_id;
 
+const userId =
+  message?.from?.id ||
+  event?.sender?.id ||
+  event?.user_id ||
+  event?.author_id;
+
+const text =
+  message?.text ||
+  event?.text ||
+  event?.message?.text;
+
+console.log("🆔 CHAT ID:", chatId);
+console.log("🆔 USER ID:", userId);
+console.log("💬 TEXT:", text);
     if (!chatId) {
       console.log("⚠️ Không tìm thấy chat_id.");
       return;
