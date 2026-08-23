@@ -3,1579 +3,781 @@ const express = require("express");
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
-// ============================================================
+// =====================================================
 // CONFIG
-// ============================================================
+// =====================================================
 
-const PORT = process.env.PORT || 10000;
+const PORT = Number(process.env.PORT || 10000);
 
-const ZALO_BOT_TOKEN =
-  (process.env.ZALO_BOT_TOKEN || "").trim();
+const ZALO_BOT_TOKEN = (process.env.ZALO_BOT_TOKEN || "").trim();
+const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || "").trim();
 
-const GEMINI_API_KEY =
-  (process.env.GEMINI_API_KEY || "").trim();
+const ADMIN_ID = (process.env.ADMIN_ID || "").trim();
 
-const ADMIN_ID =
-  (process.env.ADMIN_ID || "").trim();
+// Model chính.
+// KHÔNG dùng gemini-2.5-flash nữa.
+const GEMINI_MODEL =
+  (process.env.GEMINI_MODEL || "gemini-3.7-flash").trim();
 
-// Có thể để trống.
-// Code sẽ tự tìm model Gemini Flash phù hợp.
-const AI_MODEL =
-  (process.env.AI_MODEL || "").trim();
-
-const BOT_NAME =
-  process.env.BOT_NAME ||
-  "Bot Mặt Đất Màu Xanh";
-
-
-// ============================================================
-// BOT STATE
-// ============================================================
-
-let botEnabled = true;
-
-
-// ============================================================
-// GEMINI MODEL FALLBACK
-// ============================================================
-
-const GEMINI_MODEL_FALLBACKS = [
-  "gemini-3.7-flash",
+// Model dự phòng
+const GEMINI_FALLBACK_MODELS = [
+  GEMINI_MODEL,
   "gemini-3.6-flash",
   "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-3.1-flash-lite",
-];
+  "gemini-3.5-flash-lite"
+].filter((v, i, a) => v && a.indexOf(v) === i);
 
-let activeGeminiModel = null;
+// =====================================================
+// BOT INFO
+// =====================================================
 
+const BOT_NAME = "Bot Mặt Đất Màu Xanh";
 
-// ============================================================
-// MEMORY
-// ============================================================
-//
-// Muốn thêm câu ghi nhớ:
-//
-// {
-//   patterns: [
-//     "câu 1",
-//     "câu 2"
-//   ],
-//   answer: "câu trả lời"
-// }
-//
-// ============================================================
+const SYSTEM_PROMPT = `
+Bạn là ${BOT_NAME}, một bot Zalo AI của An Na & Hoàng Vũ.
 
-const MEMORY_RULES = [
+Quy tắc:
+- Trả lời bằng tiếng Việt.
+- Thân thiện, tự nhiên.
+- Không tự nhận mình là Gemini nếu người dùng không hỏi.
+- Trả lời ngắn gọn khi câu hỏi đơn giản.
+- Nếu người dùng hỏi ai tạo ra bot, ai làm bot, chủ bot là ai,
+  hoặc câu hỏi có ý nghĩa tương đương với:
+  "Ai tạo Bot Mặt Đất Màu Xanh?"
+  thì trả lời chính xác:
+  "An Na & Hoàng Vũ"
+- Nếu người dùng hỏi /help thì hướng dẫn các lệnh của bot.
+- Không bịa thông tin về chủ bot.
+`;
 
-  {
-    patterns: [
-      "ai tạo ra bot mặt đất màu xanh",
-      "ai tao ra bot mat dat mau xanh",
-      "ai tạo bot mặt đất màu xanh",
-      "ai tao bot mat dat mau xanh",
-      "ai làm bot mặt đất màu xanh",
-      "ai lam bot mat dat mau xanh",
-      "bot mặt đất màu xanh do ai tạo",
-      "bot mat dat mau xanh do ai tao",
-      "bot này do ai tạo",
-      "bot nay do ai tao",
-      "ai tạo ra bot này",
-      "ai tao ra bot nay"
-    ],
+// =====================================================
+// STARTUP
+// =====================================================
 
-    answer: "An Na & Hoàng Vũ"
-  }
+console.log("");
+console.log("==============================================");
+console.log("🤖 BOT MẶT ĐẤT MÀU XANH");
+console.log("==============================================");
+console.log("🚀 PORT:", PORT);
+console.log("🟢 SERVER: ON");
+console.log(
+  "🔑 GEMINI KEY:",
+  GEMINI_API_KEY ? "OK" : "❌ THIẾU"
+);
+console.log(
+  "🔑 ZALO TOKEN:",
+  ZALO_BOT_TOKEN ? "OK" : "❌ THIẾU"
+);
+console.log("🧠 GEMINI MODEL:", GEMINI_MODEL);
+console.log(
+  "🔁 FALLBACK:",
+  GEMINI_FALLBACK_MODELS.join(" -> ")
+);
+console.log(
+  "👑 ADMIN:",
+  ADMIN_ID ? "ĐÃ CẤU HÌNH" : "CHƯA CẤU HÌNH"
+);
+console.log("==============================================");
+console.log("");
 
-];
+// =====================================================
+// HELP
+// =====================================================
 
+function getHelp() {
+  return `
+🤖 ${BOT_NAME}
 
-// ============================================================
-// COMMAND SYSTEM
-// ============================================================
+📌 LỆNH CƠ BẢN
 
-const COMMANDS = {};
+/help
+→ Xem danh sách lệnh
 
+/ping
+→ Kiểm tra bot
 
-// ============================================================
-// NORMALIZE TEXT
-// ============================================================
+/id
+→ Xem Zalo User ID của bạn
 
-function normalizeText(text) {
+/on
+→ Bật bot
 
-  return String(text || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/g, "d")
-    .replace(/[^\p{L}\p{N}\s/]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+/off
+→ Tắt bot
 
+/admin
+→ Kiểm tra admin
+
+🤖 AI
+→ Gửi tin nhắn bất kỳ, bot sẽ trả lời bằng Gemini.
+
+💾 GHI NHỚ
+→ Ai tạo Bot Mặt Đất Màu Xanh?
+→ An Na & Hoàng Vũ
+
+🎮 Có thể mở rộng thêm lệnh Free Fire,
+quản lý admin và các tính năng khác sau này.
+`.trim();
 }
 
+// =====================================================
+// BOT STATE
+// =====================================================
 
-// ============================================================
-// MEMORY CHECK
-// ============================================================
+const userStates = new Map();
 
-function checkMemory(text) {
+function isUserEnabled(userId) {
+  if (!userStates.has(userId)) {
+    return true;
+  }
 
-  const normalized =
-    normalizeText(text);
+  return userStates.get(userId) !== false;
+}
 
-  for (const rule of MEMORY_RULES) {
+function setUserEnabled(userId, enabled) {
+  userStates.set(userId, enabled);
+}
 
-    for (const pattern of rule.patterns) {
+// =====================================================
+// COMMANDS
+// =====================================================
 
-      const p =
-        normalizeText(pattern);
+async function handleCommand(userId, text) {
+  const command = text.trim().toLowerCase();
 
-      if (
-        normalized === p ||
-        normalized.includes(p) ||
-        p.includes(normalized)
-      ) {
+  if (command === "/help") {
+    await sendZaloMessage(userId, getHelp());
+    return true;
+  }
 
-        return rule.answer;
+  if (command === "/ping") {
+    await sendZaloMessage(
+      userId,
+      "🏓 Pong!\n🟢 Bot đang hoạt động."
+    );
+    return true;
+  }
 
-      }
+  if (command === "/id") {
+    await sendZaloMessage(
+      userId,
+      `🆔 User ID của bạn:\n${userId}`
+    );
+    return true;
+  }
 
+  if (command === "/on") {
+    setUserEnabled(userId, true);
+
+    await sendZaloMessage(
+      userId,
+      "🟢 Bot AI đã bật lại."
+    );
+
+    return true;
+  }
+
+  if (command === "/off") {
+    setUserEnabled(userId, false);
+
+    await sendZaloMessage(
+      userId,
+      "🔴 Bot đã tắt.\n\nGửi /on để bật lại."
+    );
+
+    return true;
+  }
+
+  if (command === "/admin") {
+    if (!ADMIN_ID) {
+      await sendZaloMessage(
+        userId,
+        "⚠️ ADMIN_ID chưa được cấu hình trên Render."
+      );
+
+      return true;
     }
 
+    if (userId !== ADMIN_ID) {
+      await sendZaloMessage(
+        userId,
+        "⛔ Bạn không phải admin."
+      );
+
+      return true;
+    }
+
+    await sendZaloMessage(
+      userId,
+      "👑 Bạn đang là ADMIN."
+    );
+
+    return true;
   }
 
-  return null;
+  return false;
 }
 
-
-// ============================================================
-// GET ZALO USER ID
-// ============================================================
+// =====================================================
+// GET USER ID
+// =====================================================
 
 function getUserId(body) {
-
   return (
-    body?.message?.from?.id ||
-    body?.message?.from?.user_id ||
     body?.sender?.id ||
+    body?.message?.from?.id ||
     body?.user_id ||
     body?.message?.chat?.id ||
     null
   );
-
 }
 
-
-// ============================================================
+// =====================================================
 // GET TEXT
-// ============================================================
+// =====================================================
 
 function getMessageText(body) {
-
   return (
     body?.message?.text ||
     body?.message?.message?.text ||
     body?.text ||
     ""
   );
-
 }
 
-
-// ============================================================
-// MASK SECRET
-// ============================================================
-
-function maskSecret(value) {
-
-  if (!value) {
-    return "MISSING";
-  }
-
-  if (value.length <= 8) {
-    return "********";
-  }
-
-  return (
-    value.slice(0, 4) +
-    "********" +
-    value.slice(-4)
-  );
-
-}
-
-
-// ============================================================
-// SPLIT ZALO MESSAGE
-// ============================================================
-
-function splitMessage(
-  text,
-  maxLength = 1800
-) {
-
-  const result = [];
-
-  let remaining =
-    String(text || "").trim();
-
-  while (
-    remaining.length > maxLength
-  ) {
-
-    let cut =
-      remaining.lastIndexOf(
-        "\n",
-        maxLength
-      );
-
-    if (
-      cut < maxLength * 0.5
-    ) {
-
-      cut =
-        remaining.lastIndexOf(
-          " ",
-          maxLength
-        );
-
-    }
-
-    if (
-      cut < maxLength * 0.5
-    ) {
-
-      cut = maxLength;
-
-    }
-
-    result.push(
-      remaining
-        .slice(0, cut)
-        .trim()
-    );
-
-    remaining =
-      remaining
-        .slice(cut)
-        .trim();
-
-  }
-
-  if (remaining) {
-    result.push(remaining);
-  }
-
-  return result;
-}
-
-
-// ============================================================
-// GEMINI LIST MODELS
-// ============================================================
-
-async function listGeminiModels() {
-
-  if (!GEMINI_API_KEY) {
-
-    throw new Error(
-      "GEMINI_API_KEY chưa được cấu hình"
-    );
-
-  }
-
-  const response =
-    await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models",
-      {
-        method: "GET",
-
-        headers: {
-          "x-goog-api-key":
-            GEMINI_API_KEY
-        }
-      }
-    );
-
-  const data =
-    await response.json();
-
-  if (!response.ok) {
-
-    console.error(
-      "❌ GEMINI LIST MODELS:",
-      JSON.stringify(
-        data,
-        null,
-        2
-      )
-    );
-
-    throw new Error(
-      data?.error?.message ||
-      `Gemini HTTP ${response.status}`
-    );
-
-  }
-
-  return data?.models || [];
-}
-
-
-// ============================================================
-// CHOOSE GEMINI MODEL
-// ============================================================
-
-async function resolveGeminiModel() {
-
-  if (activeGeminiModel) {
-    return activeGeminiModel;
-  }
-
-  const models =
-    await listGeminiModels();
-
-  const usableModels =
-    models.filter(model => {
-
-      const methods =
-        model?.supportedGenerationMethods ||
-        [];
-
-      return methods.includes(
-        "generateContent"
-      );
-
-    });
-
-
-  console.log(
-    "📚 Gemini models có generateContent:"
-  );
-
-  for (
-    const model of usableModels
-  ) {
-
-    console.log(
-      "   -",
-      model?.name
-    );
-
-  }
-
-
-  // ----------------------------------------------------------
-  // 1. Nếu AI_MODEL được cấu hình và tồn tại
-  // ----------------------------------------------------------
-
-  if (AI_MODEL) {
-
-    const wanted =
-      `models/${AI_MODEL}`;
-
-    const found =
-      usableModels.find(
-        model =>
-          model?.name === wanted
-      );
-
-    if (found) {
-
-      activeGeminiModel =
-        AI_MODEL;
-
-      console.log(
-        "🧠 MODEL ĐƯỢC CHỌN:",
-        activeGeminiModel
-      );
-
-      return activeGeminiModel;
-
-    }
-
-    console.log(
-      `⚠️ AI_MODEL "${AI_MODEL}" không khả dụng.`
-    );
-
-    console.log(
-      "🔄 Đang tự chọn model khác..."
-    );
-
-  }
-
-
-  // ----------------------------------------------------------
-  // 2. Tự chọn model fallback
-  // ----------------------------------------------------------
-
-  for (
-    const candidate
-    of GEMINI_MODEL_FALLBACKS
-  ) {
-
-    const found =
-      usableModels.find(
-        model =>
-          model?.name ===
-          `models/${candidate}`
-      );
-
-    if (found) {
-
-      activeGeminiModel =
-        candidate;
-
-      console.log(
-        "🟢 AUTO MODEL:",
-        activeGeminiModel
-      );
-
-      return activeGeminiModel;
-
-    }
-
-  }
-
-
-  // ----------------------------------------------------------
-  // 3. Không tìm được
-  // ----------------------------------------------------------
-
-  throw new Error(
-    "API key Gemini không có model generateContent phù hợp."
-  );
-
-}
-
-
-// ============================================================
-// GEMINI ASK
-// ============================================================
+// =====================================================
+// GEMINI
+// =====================================================
 
 async function askGemini(text) {
-
   if (!GEMINI_API_KEY) {
-
     throw new Error(
-      "GEMINI_API_KEY chưa được cấu hình"
+      "GEMINI_API_KEY chưa được cấu hình trên Render."
     );
-
   }
 
-  const model =
-    await resolveGeminiModel();
+  let lastError = null;
 
+  for (const model of GEMINI_FALLBACK_MODELS) {
+    try {
+      console.log(`🧠 Đang hỏi Gemini: ${model}`);
 
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+      const url =
+        `https://generativelanguage.googleapis.com/v1beta/models/` +
+        `${encodeURIComponent(model)}:generateContent?key=` +
+        `${encodeURIComponent(GEMINI_API_KEY)}`;
 
-
-  const body = {
-
-    // ĐÚNG FIELD GEMINI REST API
-    systemInstruction: {
-
-      parts: [
-
-        {
-          text:
-`Bạn là trợ lý AI của ${BOT_NAME}.
-
-Hãy trả lời bằng tiếng Việt.
-Nói chuyện tự nhiên, thân thiện.
-Trả lời ngắn gọn khi câu hỏi đơn giản.
-Nếu người dùng hỏi chuyện bình thường thì trả lời như một người bạn.
-Không tự bịa thông tin.
-Nếu không biết thì nói rõ là không biết.
-
-Bot có thể được mở rộng thêm các lệnh Free Fire và các chức năng khác trong tương lai.`
-        }
-
-      ]
-
-    },
-
-    contents: [
-
-      {
-
-        role: "user",
-
-        parts: [
-
-          {
-            text:
-              String(text)
-          }
-
-        ]
-
-      }
-
-    ]
-
-  };
-
-
-  const response =
-    await fetch(
-      url,
-      {
-
+      const response = await fetch(url, {
         method: "POST",
 
         headers: {
-
-          "Content-Type":
-            "application/json",
-
-          "x-goog-api-key":
-            GEMINI_API_KEY
-
+          "Content-Type": "application/json"
         },
 
-        body:
-          JSON.stringify(body)
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [
+              {
+                text: SYSTEM_PROMPT
+              }
+            ]
+          },
 
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: String(text)
+                }
+              ]
+            }
+          ]
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error(
+          `❌ GEMINI ${model} HTTP ${response.status}`
+        );
+
+        console.error(
+          JSON.stringify(data, null, 2)
+        );
+
+        lastError = new Error(
+          data?.error?.message ||
+          `Gemini HTTP ${response.status}`
+        );
+
+        // thử model tiếp theo
+        continue;
       }
-    );
 
+      const answer =
+        data?.candidates?.[0]?.content?.parts
+          ?.map((part) => part?.text || "")
+          .join("")
+          .trim();
 
-  const data =
-    await response.json();
+      if (!answer) {
+        lastError = new Error(
+          "Gemini không trả về nội dung."
+        );
 
+        continue;
+      }
 
-  console.log(
-    "🤖 GEMINI HTTP:",
-    response.status
+      console.log(
+        `✅ GEMINI OK: ${model}`
+      );
+
+      return answer;
+    } catch (error) {
+      console.error(
+        `❌ GEMINI ${model} ERROR:`,
+        error.message
+      );
+
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error(
+    "Không có Gemini model nào hoạt động."
   );
-
-
-  if (!response.ok) {
-
-    console.error(
-      "❌ GEMINI DETAIL:",
-      JSON.stringify(
-        data,
-        null,
-        2
-      )
-    );
-
-    throw new Error(
-
-      data?.error?.message ||
-      `Gemini HTTP ${response.status}`
-
-    );
-
-  }
-
-
-  const answer =
-    data
-      ?.candidates?.[0]
-      ?.content?.parts
-      ?.map(
-        part =>
-          part?.text || ""
-      )
-      .join("")
-      .trim();
-
-
-  if (!answer) {
-
-    console.error(
-      "❌ GEMINI RESPONSE:",
-      JSON.stringify(
-        data,
-        null,
-        2
-      )
-    );
-
-    throw new Error(
-      "Gemini không trả về nội dung."
-    );
-
-  }
-
-
-  return answer;
-
 }
 
+// =====================================================
+// ZALO SEND MESSAGE
+// =====================================================
 
-// ============================================================
-// SEND ZALO
-// ============================================================
-
-async function sendZaloMessage(
-  userId,
-  text
-) {
-
+async function sendZaloMessage(userId, text) {
   if (!ZALO_BOT_TOKEN) {
-
     throw new Error(
-      "ZALO_BOT_TOKEN chưa được cấu hình"
+      "ZALO_BOT_TOKEN chưa được cấu hình."
     );
-
   }
 
   if (!userId) {
-
     throw new Error(
-      "Không tìm thấy user_id"
+      "Không tìm thấy Zalo user_id."
     );
-
   }
 
+  // Zalo giới hạn text.
+  const messageText = String(text).slice(0, 2000);
 
-  const chunks =
-    splitMessage(text);
+  const response = await fetch(
+    "https://openapi.zalo.me/v3.0/oa/message/cs",
+    {
+      method: "POST",
 
+      headers: {
+        "Content-Type": "application/json",
+        "access_token": ZALO_BOT_TOKEN
+      },
 
-  for (
-    const chunk
-    of chunks
-  ) {
+      body: JSON.stringify({
+        recipient: {
+          user_id: userId
+        },
 
-    const response =
-      await fetch(
-        "https://openapi.zalo.me/v3.0/oa/message/cs",
-        {
-
-          method: "POST",
-
-          headers: {
-
-            "Content-Type":
-              "application/json",
-
-            "access_token":
-              ZALO_BOT_TOKEN
-
-          },
-
-          body:
-            JSON.stringify({
-
-              recipient: {
-
-                user_id:
-                  String(userId)
-
-              },
-
-              message: {
-
-                text:
-                  String(chunk)
-
-              }
-
-            })
-
+        message: {
+          text: messageText
         }
-      );
+      })
+    }
+  );
 
+  const data = await response.json();
 
-    const data =
-      await response.json();
+  console.log(
+    "📤 ZALO:",
+    JSON.stringify(data)
+  );
 
+  if (!response.ok || data?.error !== 0) {
+    const errorCode = data?.error;
 
-    console.log(
-      "📤 ZALO RESPONSE:",
-      JSON.stringify(data)
-    );
+    const message =
+      data?.message ||
+      data?.error_name ||
+      `Zalo HTTP ${response.status}`;
 
-
-    if (
-      !response.ok ||
-      data?.error !== 0
-    ) {
-
+    if (errorCode === -216) {
       throw new Error(
-
-        data?.message ||
-        data?.error_name ||
-        `Zalo HTTP ${response.status}`
-
+        "ZALO_TOKEN_INVALID: Access token is invalid."
       );
-
     }
 
+    throw new Error(
+      `Zalo error ${errorCode}: ${message}`
+    );
   }
 
+  return data;
 }
 
+// =====================================================
+// SPECIAL MEMORY
+// =====================================================
 
-// ============================================================
-// HELP
-// ============================================================
+function checkMemoryQuestion(text) {
+  const normalized = String(text)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 
-function getHelp() {
+  const keywords = [
+    "ai tao bot",
+    "ai lam bot",
+    "ai viet bot",
+    "ai tao ra bot",
+    "chu bot la ai",
+    "bot cua ai",
+    "ai lam ra bot",
+    "ai tao ra mat dat mau xanh",
+    "ai tao mat dat mau xanh",
+    "ai tao bot mat dat mau xanh",
+    "nguoi tao bot"
+  ];
 
-  return `
-🤖 ${BOT_NAME}
-
-📌 LỆNH
-
-/help
-→ Xem danh sách lệnh.
-
-/on
-→ Bật bot.
-
-/off
-→ Tắt bot.
-
-/ping
-→ Kiểm tra bot.
-
-/id
-→ Xem User ID.
-
-/ai
-→ Kiểm tra Gemini.
-
-/status
-→ Xem trạng thái.
-
-/memory
-→ Xem bộ nhớ.
-
-/admin
-→ Xem Admin ID.
-
-💬 NHẮN BẤT KỲ
-→ Bot sẽ trả lời bằng Gemini.
-
-🧠 GHI NHỚ
-Hỏi:
-"Ai tạo ra bot mặt đất màu xanh?"
-
-Bot:
-"An Na & Hoàng Vũ"
-
-🚀 Sau này có thể thêm lệnh FF,
-game và các chức năng khác.
-`.trim();
-
+  return keywords.some(
+    (keyword) =>
+      normalized.includes(keyword)
+  );
 }
 
+// =====================================================
+// WEBHOOK PROCESSOR
+// =====================================================
 
-// ============================================================
-// COMMAND: HELP
-// ============================================================
-
-COMMANDS["/help"] =
-async ({
-  userId
-}) => {
-
-  await sendZaloMessage(
-    userId,
-    getHelp()
+async function processWebhook(body) {
+  console.log("");
+  console.log("==============================================");
+  console.log("📩 ZALO WEBHOOK");
+  console.log(
+    JSON.stringify(body, null, 2)
   );
+  console.log("==============================================");
 
-};
-
-
-// ============================================================
-// COMMAND: ON
-// ============================================================
-
-COMMANDS["/on"] =
-async ({
-  userId
-}) => {
-
-  botEnabled = true;
-
-  await sendZaloMessage(
-    userId,
-    "🟢 Bot đã bật!"
-  );
-
-};
-
-
-// ============================================================
-// COMMAND: OFF
-// ============================================================
-
-COMMANDS["/off"] =
-async ({
-  userId
-}) => {
-
-  botEnabled = false;
-
-  await sendZaloMessage(
-    userId,
-    "🔴 Bot đã tắt.\n\nGửi /on để bật lại."
-  );
-
-};
-
-
-// ============================================================
-// COMMAND: PING
-// ============================================================
-
-COMMANDS["/ping"] =
-async ({
-  userId
-}) => {
-
-  await sendZaloMessage(
-    userId,
-    "🏓 Pong!\n🟢 Bot đang hoạt động."
-  );
-
-};
-
-
-// ============================================================
-// COMMAND: ID
-// ============================================================
-
-COMMANDS["/id"] =
-async ({
-  userId
-}) => {
-
-  await sendZaloMessage(
-    userId,
-    `🆔 User ID:\n${userId}`
-  );
-
-};
-
-
-// ============================================================
-// COMMAND: AI
-// ============================================================
-
-COMMANDS["/ai"] =
-async ({
-  userId
-}) => {
-
-  try {
-
-    const model =
-      await resolveGeminiModel();
-
-    await sendZaloMessage(
-
-      userId,
-
-      `🟢 GEMINI OK
-
-Model:
-${model}
-
-API Key:
-Hợp lệ`
-
-    );
-
-  } catch (error) {
-
-    await sendZaloMessage(
-
-      userId,
-
-      `🔴 GEMINI LỖI
-
-${error.message}`
-
-    );
-
-  }
-
-};
-
-
-// ============================================================
-// COMMAND: STATUS
-// ============================================================
-
-COMMANDS["/status"] =
-async ({
-  userId
-}) => {
-
-  let geminiStatus =
-    "🔴 Lỗi";
-
-  let model =
-    activeGeminiModel ||
-    "Chưa kiểm tra";
-
-
-  try {
-
-    model =
-      await resolveGeminiModel();
-
-    geminiStatus =
-      "🟢 OK";
-
-  } catch (error) {
-
-    geminiStatus =
-      "🔴 " +
-      error.message;
-
-  }
-
-
-  await sendZaloMessage(
-
-    userId,
-
-    `
-📊 BOT STATUS
-
-🖥 Server:
-🟢 Online
-
-🤖 AI:
-Google Gemini
-
-🧠 Model:
-${model}
-
-🔑 Gemini:
-${geminiStatus}
-
-💬 Zalo Token:
-${ZALO_BOT_TOKEN
-  ? "🟢 Có"
-  : "🔴 Thiếu"}
-
-🤖 Bot:
-${botEnabled
-  ? "🟢 ON"
-  : "🔴 OFF"}
-`.trim()
-
-  );
-
-};
-
-
-// ============================================================
-// COMMAND: MEMORY
-// ============================================================
-
-COMMANDS["/memory"] =
-async ({
-  userId
-}) => {
-
-  await sendZaloMessage(
-
-    userId,
-
-    `🧠 MEMORY
-
-Số nhóm ghi nhớ:
-${MEMORY_RULES.length}
-
-Ví dụ:
-"Ai tạo ra bot mặt đất màu xanh?"
-
-→ An Na & Hoàng Vũ`
-
-  );
-
-};
-
-
-// ============================================================
-// COMMAND: ADMIN
-// ============================================================
-
-COMMANDS["/admin"] =
-async ({
-  userId
-}) => {
-
+  // Không xử lý bot message
   if (
-    ADMIN_ID &&
-    String(userId) !==
-      String(ADMIN_ID)
+    body?.message?.from?.is_bot === true ||
+    body?.sender?.is_bot === true
   ) {
-
-    await sendZaloMessage(
-      userId,
-      "⛔ Bạn không phải admin."
-    );
-
+    console.log("🤖 Tin từ bot -> bỏ qua.");
     return;
   }
 
+  const userId = getUserId(body);
+  const text = getMessageText(body).trim();
 
-  await sendZaloMessage(
+  console.log("🆔 USER:", userId);
+  console.log("💬 TEXT:", text);
 
-    userId,
-
-    `👑 ADMIN ID:
-
-${ADMIN_ID || userId}`
-
-  );
-
-};
-
-
-// ============================================================
-// PROCESS MESSAGE
-// ============================================================
-
-async function processMessage(
-  body
-) {
-
-  console.log("");
-  console.log(
-    "========================================"
-  );
-
-  console.log(
-    "📩 ZALO EVENT"
-  );
-
-
-  const text =
-    getMessageText(body)
-      .trim();
-
-
-  const userId =
-    getUserId(body);
-
-
-  console.log(
-    "🆔 USER ID:",
-    userId
-  );
-
-  console.log(
-    "💬 TEXT:",
-    text
-  );
-
-
-  // ----------------------------------------------------------
-  // Không có text
-  // ----------------------------------------------------------
+  if (!userId) {
+    console.log(
+      "⚠️ Không tìm thấy user ID."
+    );
+    return;
+  }
 
   if (!text) {
-
     console.log(
       "⚠️ Không có text -> bỏ qua."
     );
-
     return;
-
   }
 
+  // -----------------------------------------------
+  // SPECIAL MEMORY
+  // -----------------------------------------------
 
-  // ----------------------------------------------------------
-  // Không có user
-  // ----------------------------------------------------------
-
-  if (!userId) {
+  if (checkMemoryQuestion(text)) {
+    await sendZaloMessage(
+      userId,
+      "An Na & Hoàng Vũ"
+    );
 
     console.log(
-      "❌ Không tìm thấy user ID."
+      "💾 MEMORY -> An Na & Hoàng Vũ"
     );
 
     return;
-
   }
 
-
-  // ----------------------------------------------------------
-  // Tin từ bot
-  // ----------------------------------------------------------
-
-  if (
-    body?.message?.from?.is_bot === true
-  ) {
-
-    console.log(
-      "🤖 Tin từ bot -> bỏ qua."
-    );
-
-    return;
-
-  }
-
-
-  // ----------------------------------------------------------
+  // -----------------------------------------------
   // COMMAND
-  // ----------------------------------------------------------
+  // -----------------------------------------------
 
-  const firstWord =
-    text
-      .split(/\s+/)[0]
-      .toLowerCase();
+  const handled =
+    await handleCommand(userId, text);
 
-
-  if (
-    COMMANDS[firstWord]
-  ) {
-
-    console.log(
-      "⚙️ COMMAND:",
-      firstWord
-    );
-
-
-    try {
-
-      await COMMANDS[firstWord]({
-
-        userId,
-        text,
-        body
-
-      });
-
-    } catch (error) {
-
-      console.error(
-        "❌ COMMAND ERROR:",
-        error.message
-      );
-
-      try {
-
-        await sendZaloMessage(
-
-          userId,
-
-          `❌ Lỗi lệnh:
-
-${error.message}`
-
-        );
-
-      } catch (_) {}
-
-    }
-
-
+  if (handled) {
     return;
-
   }
 
-
-  // ----------------------------------------------------------
+  // -----------------------------------------------
   // BOT OFF
-  // ----------------------------------------------------------
+  // -----------------------------------------------
 
-  if (!botEnabled) {
-
+  if (!isUserEnabled(userId)) {
     console.log(
-      "🔴 Bot OFF -> bỏ qua tin nhắn."
+      "🔴 Bot đang OFF cho user:",
+      userId
     );
 
     return;
-
   }
 
-
-  // ----------------------------------------------------------
-  // MEMORY
-  // ----------------------------------------------------------
-
-  const memoryAnswer =
-    checkMemory(text);
-
-
-  if (memoryAnswer) {
-
-    console.log(
-      "🧠 MEMORY HIT:",
-      memoryAnswer
-    );
-
-
-    try {
-
-      await sendZaloMessage(
-
-        userId,
-
-        memoryAnswer
-
-      );
-
-    } catch (error) {
-
-      console.error(
-        "❌ MEMORY SEND:",
-        error.message
-      );
-
-    }
-
-
-    return;
-
-  }
-
-
-  // ----------------------------------------------------------
+  // -----------------------------------------------
   // GEMINI
-  // ----------------------------------------------------------
+  // -----------------------------------------------
 
   console.log(
     "🤖 Đang hỏi Gemini..."
   );
 
+  let answer;
 
   try {
-
-    const answer =
-      await askGemini(text);
-
-
-    console.log(
-      "🤖 GEMINI TRẢ LỜI:"
+    answer = await askGemini(text);
+  } catch (error) {
+    console.error(
+      "❌ GEMINI FINAL ERROR:",
+      error.message
     );
 
-    console.log(
-      answer
-    );
+    // Cố gắng báo cho user
+    try {
+      await sendZaloMessage(
+        userId,
+        "⚠️ AI đang gặp lỗi.\n\n" +
+        "Nếu lỗi tiếp tục, kiểm tra GEMINI_API_KEY " +
+        "và GEMINI_MODEL trên Render."
+      );
+    } catch (zaloError) {
+      console.error(
+        "❌ Không gửi được lỗi về Zalo:",
+        zaloError.message
+      );
+    }
 
+    return;
+  }
 
+  console.log("🤖 GEMINI:");
+  console.log(answer);
+
+  // -----------------------------------------------
+  // SEND TO ZALO
+  // -----------------------------------------------
+
+  try {
     await sendZaloMessage(
       userId,
       answer
     );
 
-
     console.log(
-      "✅ Đã trả lời Zalo."
+      "✅ Đã gửi câu trả lời về Zalo."
     );
-
-
   } catch (error) {
-
     console.error(
-      "❌ GEMINI ERROR:",
+      "❌ ZALO SEND ERROR:",
       error.message
     );
 
-
-    try {
-
-      await sendZaloMessage(
-
-        userId,
-
-        `❌ Gemini gặp lỗi.
-
-${error.message}`
-
-      );
-
-    } catch (zaloError) {
-
+    if (
+      error.message.includes(
+        "ZALO_TOKEN_INVALID"
+      )
+    ) {
       console.error(
-        "❌ KHÔNG GỬI ĐƯỢC ZALO:",
-        zaloError.message
+        "🔑 ZALO TOKEN ĐANG SAI/HẾT HẠN."
       );
-
     }
-
   }
-
-
-  console.log(
-    "========================================"
-  );
-
 }
 
-
-// ============================================================
+// =====================================================
 // WEBHOOK /webhook
-// ============================================================
+// =====================================================
 
-app.post(
-  "/webhook",
-  async (
-    req,
-    res
-  ) => {
+app.post("/webhook", async (req, res) => {
+  // Trả 200 ngay
+  res.status(200).json({
+    ok: true
+  });
 
-    // Trả 200 NGAY cho Zalo
-    res.status(200).json({
-      ok: true
-    });
-
-
-    try {
-
-      await processMessage(
-        req.body
-      );
-
-    } catch (error) {
-
-      console.error(
-        "❌ WEBHOOK ERROR:",
-        error
-      );
-
-    }
-
+  // xử lý phía sau
+  try {
+    await processWebhook(req.body);
+  } catch (error) {
+    console.error(
+      "❌ WEBHOOK ERROR:",
+      error
+    );
   }
-);
+});
 
-
-// ============================================================
+// =====================================================
 // WEBHOOK /zalo/webhook
-// ============================================================
+// =====================================================
 
-app.post(
-  "/zalo/webhook",
-  async (
-    req,
-    res
-  ) => {
+app.post("/zalo/webhook", async (req, res) => {
+  res.status(200).json({
+    ok: true
+  });
 
-    res.status(200).json({
-      ok: true
-    });
-
-
-    try {
-
-      await processMessage(
-        req.body
-      );
-
-    } catch (error) {
-
-      console.error(
-        "❌ /zalo/webhook ERROR:",
-        error
-      );
-
-    }
-
+  try {
+    await processWebhook(req.body);
+  } catch (error) {
+    console.error(
+      "❌ /zalo/webhook ERROR:",
+      error
+    );
   }
-);
+});
 
+// =====================================================
+// HEALTH
+// =====================================================
 
-// ============================================================
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    bot: BOT_NAME,
+    server: true,
+    gemini: !!GEMINI_API_KEY,
+    zalo: !!ZALO_BOT_TOKEN,
+    model: GEMINI_MODEL,
+    fallbackModels: GEMINI_FALLBACK_MODELS
+  });
+});
+
+// =====================================================
 // HOME
-// ============================================================
+// =====================================================
 
-app.get(
-  "/",
-  (
-    req,
-    res
-  ) => {
-
-    res.status(200).send(`
-
+app.get("/", (req, res) => {
+  res.status(200).send(`
 <!DOCTYPE html>
-
 <html lang="vi">
-
 <head>
-
 <meta charset="UTF-8">
-
-<meta name="viewport"
-content="width=device-width, initial-scale=1">
-
 <title>${BOT_NAME}</title>
-
+<style>
+body {
+  font-family: Arial, sans-serif;
+  max-width: 700px;
+  margin: 40px auto;
+  padding: 20px;
+}
+.ok {
+  color: green;
+}
+</style>
 </head>
 
 <body>
 
-<h2>🤖 ${BOT_NAME}</h2>
+<h1>🤖 ${BOT_NAME}</h1>
 
-<p>🟢 Server đang chạy.</p>
-
-<p>AI: Google Gemini</p>
-
-<p>Model:
-<b>
-${activeGeminiModel || AI_MODEL || "AUTO"}
-</b>
+<p class="ok">
+🟢 Server đang chạy.
 </p>
 
-<p>Webhook:
+<p>
+🧠 AI: Google Gemini
+</p>
+
+<p>
+🧠 Model: ${GEMINI_MODEL}
+</p>
+
+<p>
+📡 Webhook:
 <code>/webhook</code>
 </p>
 
+<p>
+❤️ <a href="/health">Health Check</a>
+</p>
+
 </body>
-
 </html>
+  `);
+});
 
-`);
+// =====================================================
+// 404
+// =====================================================
 
-  }
-);
+app.use((req, res) => {
+  res.status(404).json({
+    ok: false,
+    error: "Not Found"
+  });
+});
 
-
-// ============================================================
-// HEALTH CHECK
-// ============================================================
-
-app.get(
-  "/health",
-  async (
-    req,
-    res
-  ) => {
-
-    let gemini = false;
-    let model =
-      activeGeminiModel ||
-      null;
-
-    try {
-
-      model =
-        await resolveGeminiModel();
-
-      gemini = true;
-
-    } catch (_) {}
-
-
-    res.json({
-
-      ok:
-        gemini &&
-        !!ZALO_BOT_TOKEN,
-
-      server:
-        true,
-
-      gemini: {
-
-        configured:
-          !!GEMINI_API_KEY,
-
-        valid:
-          gemini,
-
-        model:
-          model
-
-      },
-
-      zalo: {
-
-        configured:
-          !!ZALO_BOT_TOKEN
-
-      },
-
-      bot: {
-
-        enabled:
-          botEnabled
-
-      }
-
-    });
-
-  }
-);
-
-
-// ============================================================
+// =====================================================
 // ERROR HANDLER
-// ============================================================
+// =====================================================
 
-app.use(
-  (
-    err,
-    req,
-    res,
-    next
-  ) => {
+app.use((err, req, res, next) => {
+  console.error(
+    "❌ SERVER ERROR:",
+    err
+  );
 
-    console.error(
-      "❌ SERVER ERROR:",
-      err
-    );
-
-
-    if (
-      !res.headersSent
-    ) {
-
-      res
-        .status(500)
-        .json({
-          ok: false
-        });
-
-    }
-
+  if (!res.headersSent) {
+    res.status(500).json({
+      ok: false,
+      error: "Internal Server Error"
+    });
   }
-);
+});
 
-
-// ============================================================
+// =====================================================
 // START
-// ============================================================
+// =====================================================
 
 app.listen(
   PORT,
   "0.0.0.0",
-  async () => {
-
+  () => {
     console.log("");
     console.log(
-      "========================================"
+      "=============================================="
     );
-
     console.log(
-      `🤖 ${BOT_NAME}`
+      "🚀 BOT MẶT ĐẤT MÀU XANH ĐÃ ONLINE"
     );
-
     console.log(
-      "========================================"
+      "=============================================="
     );
-
     console.log(
-      "🚀 PORT:",
-      PORT
+      `🌐 PORT: ${PORT}`
     );
-
-    console.log(
-      "🟢 SERVER: ON"
-    );
-
     console.log(
       "🤖 AI: Google Gemini"
     );
-
     console.log(
-      "🔑 GEMINI KEY:",
-      maskSecret(
-        GEMINI_API
+      `🧠 MODEL: ${GEMINI_MODEL}`
+    );
+    console.log(
+      "📡 WEBHOOK: /webhook"
+    );
+    console.log(
+      "❤️ HEALTH: /health"
+    );
+    console.log(
+      "=============================================="
+    );
+  }
+);
